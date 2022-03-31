@@ -7,34 +7,50 @@
 //struct Coroutine*   waiting4timer_head;
 
 
-// tail is currently running.
-// head is the one up next.
+// head is currently running.
 struct LinkedList   ready2run;
+
+
+#define FLAGS_DO_NOT_RESCHEDULE     (1 << 0)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
 
 struct CoroutineHeader
 {
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
+    uint32_t                flags;
 }  mainflow;
+
+static_assert(sizeof(mainflow.llentry) == 4);
+// arm docs say that stack pointer should be 8 byte aligned, at a public interface.
+// FIXME ...which is not what this assert here checks. 
+static_assert((offsetof(struct Coroutine, stack) % 8) == 0);
 
 
 void yield_and_exit()
 {
+    struct Coroutine* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+    self->flags |= FLAGS_DO_NOT_RESCHEDULE;
+    yield();
 }
 
 // returns stack pointer for next coro
 static volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 {
+    // FIXME: check waiting4timer etc as well.
+    assert(!ll_is_empty(&ready2run));
+
+    struct Coroutine* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
+    currentcoro->sp = current_sp;
+
+    if (!(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE))
+        ll_push_back(&ready2run, &currentcoro->llentry);
+
+    // FIXME: check waiting4timer etc as well.
     if (ll_is_empty(&ready2run))
         return mainflow.sp;
 
-    struct Coroutine* currentcoro = LL_ACCESS(currentcoro, llentry, ll_peek_tail(&ready2run));
-    currentcoro->sp = current_sp;
-
-    struct Coroutine* upnext = LL_ACCESS(upnext, llentry, ll_pop_front(&ready2run));
-    ll_push_back(&ready2run, &upnext->llentry);
-
+    struct Coroutine* upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
     return upnext->sp;
 }
 
@@ -95,6 +111,7 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage)
     // for debugging
     memset((void*) &storage->stack[0], 0, sizeof(storage->stack));
 
+    storage->flags = 0;
     const int bottom_element = sizeof(storage->stack) / sizeof(storage->stack[0]);
     // points to past the last element!
     storage->sp = &storage->stack[bottom_element];
@@ -114,25 +131,20 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage)
     *--storage->sp = 0;
     *--storage->sp = 0;
     *--storage->sp = 0;
-/*
-        "push {lr};"
-        "push {r0, r1, r2, r3, r4, r5, r6, r7};"
-        "push {r8, r9, r10, r11, r12};"
-*/
-
-    if (!mainflow.sp)
-        ll_init_list(&ready2run);
-
-    // FIXME: should this be push_front()? this function call here is yield_and_start(), but we are only yielding, starting is happening much later. which is ok?
-    //        but but but: tail is the currently executing coro!
-    ll_push_front(&ready2run, &storage->llentry);
 
     if (!mainflow.sp)
     {
-        // i need mainflow in ready2run.tail so that schedule_next() does the right thing.
-        // remember: tail is currently executing.
+        ll_init_list(&ready2run);
+        // i need mainflow in ready2run.head so that schedule_next() does the right thing.
+        // remember: head is currently executing.
         ll_push_back(&ready2run, &mainflow.llentry);
+        // mainflow.sp will be updated by yield().
+
+        // run this pseudo coro only once (right now).
+        mainflow.flags |= FLAGS_DO_NOT_RESCHEDULE;
     }
+
+    ll_push_back(&ready2run, &storage->llentry);
 
     yield();
 }

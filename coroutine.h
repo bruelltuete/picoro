@@ -6,12 +6,11 @@ struct Coroutine
 {
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
-
-    // FIXME: stack should be 8 byte aligned, i think.
+    uint32_t                flags;
 
     // stack should be small, no need for recursive/deep callstacks.
     // BUT: if you want to use printf you need lots more than 128*4=512 bytes of stack!
-    volatile uint32_t   stack[256];
+    volatile uint32_t       stack[256]  __attribute__((aligned(8)));
 };
 
 /**

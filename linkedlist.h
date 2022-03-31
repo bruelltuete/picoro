@@ -7,6 +7,10 @@ struct LinkedListEntry
     struct LinkedListEntry*    next;
 };
 
+/**
+ * @brief Minimal intrusive singly-linked-list (forward only).
+ * Does not allocate memory, you need to embed LinkedListEntry into your structure.
+ */
 struct LinkedList
 {
     struct LinkedListEntry*    head;
@@ -37,6 +41,17 @@ static inline struct LinkedListEntry* ll_peek_tail(struct LinkedList* list)
     }
 
     return list->tail;
+}
+
+static inline struct LinkedListEntry* ll_peek_head(struct LinkedList* list)
+{
+    if (list->head == NULL)
+    {
+        assert(list->tail == NULL);
+        return NULL;
+    }
+
+    return list->head;
 }
 
 static inline void ll_push_back(struct LinkedList* list, struct LinkedListEntry* value)
@@ -123,6 +138,12 @@ static inline void ll_unit_test()
 
     struct LinkedListEntry* tail = ll_peek_tail(&list);
     assert(&value2.listentry == tail);
+
+
+    // peek_head
+
+    struct LinkedListEntry* head = ll_peek_head(&list);
+    assert(&value1.listentry == head);
 
 
     // pop_front
