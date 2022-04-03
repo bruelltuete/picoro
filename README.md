@@ -1,6 +1,7 @@
 # Hacky coroutine library for the Raspi Pico
 
 I needed a way to jump between different "threads" of execution, without the overhead of real multi-threading.
+Simple cooperative multi-tasking was good enough.
 
 ## Buyer beware
 

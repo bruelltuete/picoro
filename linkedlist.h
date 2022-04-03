@@ -56,6 +56,10 @@ static inline struct LinkedListEntry* ll_peek_head(struct LinkedList* list)
 
 static inline void ll_push_back(struct LinkedList* list, struct LinkedListEntry* value)
 {
+    // catch easy mistake: a value can only be in one list at a time, there's only 1 intrusive link!
+    assert(value != list->head);
+    assert(value != list->tail);
+
     if (list->head == NULL)
     {
         assert(list->tail == NULL);
@@ -72,6 +76,10 @@ static inline void ll_push_back(struct LinkedList* list, struct LinkedListEntry*
 
 static inline void ll_push_front(struct LinkedList* list, struct LinkedListEntry* value)
 {
+    // catch easy mistake: a value can only be in one list at a time, there's only 1 intrusive link!
+    assert(value != list->head);
+    assert(value != list->tail);
+
     if (list->head == NULL)
     {
         assert(list->tail == NULL);
@@ -89,7 +97,11 @@ static inline struct LinkedListEntry* ll_pop_front(struct LinkedList* list)
 {
     struct LinkedListEntry* value = list->head;
     if (value == NULL)
+    {
+        // empty list
+        assert(list->tail == NULL);
         return NULL;
+    }
 
     struct LinkedListEntry* newhead = value->next;
     list->head = newhead;
@@ -97,6 +109,27 @@ static inline struct LinkedListEntry* ll_pop_front(struct LinkedList* list)
         list->tail = NULL;
 
     return value;
+}
+
+static inline void ll_remove(struct LinkedList* list, struct LinkedListEntry* value)
+{
+    for (struct LinkedListEntry* i = list->head, *p = NULL; i != NULL; p = i, i = i->next)
+    {
+        if (i == value)
+        {
+            if (i == list->head)
+                list->head = i->next;
+            if (i == list->tail)
+                list->tail = p;
+            if (p != NULL)
+            {
+                assert(p->next == i);
+                p->next = i->next;
+            }
+
+            return;
+        }
+    }
 }
 
 #define LL_ACCESS_INTERNAL(type, given, offset)      ((type) (((uint8_t*) (given)) + offset))
@@ -180,4 +213,27 @@ static inline void ll_unit_test()
 
     struct LinkedListEntry* front3 = ll_pop_front(&list);
     assert(&value3.listentry == front3);
+
+
+    // ll_remove
+
+    assert(ll_is_empty(&list));
+    ll_push_back(&list, &value1.listentry);
+    ll_remove(&list, &value1.listentry);
+    assert(ll_is_empty(&list));
+
+    ll_push_back(&list, &value1.listentry);
+    ll_push_back(&list, &value2.listentry);
+    ll_remove(&list, &value1.listentry);        // remove head
+    assert(&value2.listentry == ll_peek_head(&list));
+
+    ll_push_back(&list, &value1.listentry);
+    ll_remove(&list, &value1.listentry);        // remove tail
+    assert(&value2.listentry == ll_peek_tail(&list));
+
+    ll_push_back(&list, &value3.listentry);
+    ll_push_back(&list, &value1.listentry);     // order is: v2, v3, v1
+    ll_remove(&list, &value3.listentry);        // remove in the middle
+    assert(&value2.listentry == ll_peek_head(&list));
+    assert(&value1.listentry == ll_peek_tail(&list));
 }
