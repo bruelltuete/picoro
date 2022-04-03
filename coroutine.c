@@ -1,7 +1,5 @@
 #include "coroutine.h"
 #include "pico/stdlib.h"
-#include "hardware/irq.h"
-#include "hardware/dma.h"
 #include "pico/critical_section.h"
 #include <string.h>
 
