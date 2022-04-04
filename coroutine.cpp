@@ -16,19 +16,14 @@ critical_section_t  lock;
 //#define FLAGS_PUT_IN_SLEEPING_QUEUE (1 << 2)
 
 
-struct CoroutineHeader
-{
-    volatile uint32_t*      sp;
-    struct LinkedListEntry  llentry;
-    uint16_t                flags;
-    int8_t                  sleepcount;
-}  mainflow;
+static CoroutineHeader     mainflow;
 
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
 static_assert(sizeof(mainflow.llentry) == 4);
 // arm docs say that stack pointer should be 8 byte aligned, at a public interface.
 // FIXME ...which is not what this assert here checks. 
-static_assert((offsetof(struct Coroutine, stack) % 8) == 0);
+static_assert((offsetof(struct Coroutine<>, stack) % 8) == 0);
+//static_assert(((int32_t) &((Coroutine<>*) 0)->stack[0]) % 8 == 0);
 
 
 #if 0
@@ -73,12 +68,12 @@ void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready)
 #endif
 
 // returns stack pointer for next coro
-static volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
+extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 {
     critical_section_enter_blocking(&lock);
 
     assert(!ll_is_empty(&ready2run));
-    struct Coroutine* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
+    struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
     currentcoro->sp = current_sp;
 
     bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
@@ -109,6 +104,7 @@ static volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
             critical_section_exit(&lock);
             // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
             //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
+            // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
             __wfe();
             critical_section_enter_blocking(&lock);
 
@@ -124,7 +120,7 @@ static volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
         return mainflow.sp;
     }
 
-    struct Coroutine* upnext;
+    struct CoroutineHeader* upnext;
 gotonext:
     upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
 
@@ -184,19 +180,20 @@ static void entry_point_wrapper(coroutinefp_t func, int param)
         __breakpoint();
 }
 
-void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage)
+void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
+    Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
     // for debugging
-    memset((void*) &storage->stack[0], 0, sizeof(storage->stack));
+    memset((void*) &ptrhelper->stack[0], 0, stacksize * sizeof(ptrhelper->stack[0]));
 
     storage->flags = 0;
     storage->sleepcount = 0;
-    const int bottom_element = sizeof(storage->stack) / sizeof(storage->stack[0]);
-    // points to past the last element!
-    storage->sp = &storage->stack[bottom_element];
+    const int bottom_element = stacksize;
+    // points to *past* the last element!
+    storage->sp = &ptrhelper->stack[bottom_element];
     // "push" some values onto the stack.
     // this needs to match what yield() does!
-    *--storage->sp = entry_point_wrapper;
+    *--storage->sp = (uint32_t) entry_point_wrapper;
     *--storage->sp = 0;
     *--storage->sp = 0;
     *--storage->sp = 0;
@@ -204,7 +201,7 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage)
     *--storage->sp = 0;
     *--storage->sp = 0;
     *--storage->sp = param;     // r1
-    *--storage->sp = func;      // r0
+    *--storage->sp = (uint32_t) func;      // r0
     *--storage->sp = 0;
     *--storage->sp = 0;
     *--storage->sp = 0;
@@ -246,7 +243,7 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage)
 void yield_and_exit()
 {
     critical_section_enter_blocking(&lock);
-    struct Coroutine* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
     self->flags |= FLAGS_DO_NOT_RESCHEDULE;
     critical_section_exit(&lock);
 
@@ -258,7 +255,7 @@ void yield_and_wait4time(absolute_time_t until)
     critical_section_enter_blocking(&lock);
 
     // FIXME
-    struct Coroutine* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
     //self->flags |= FLAGS_PUT_IN_TIMER_QUEUE;
     critical_section_exit(&lock);
 
@@ -268,14 +265,14 @@ void yield_and_wait4time(absolute_time_t until)
 void yield_and_wait4wakeup()
 {
     critical_section_enter_blocking(&lock);
-    struct Coroutine* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
     self->sleepcount++;
     critical_section_exit(&lock);
 
     yield();
 }
 
-void wakeup(struct Coroutine* coro)
+void wakeup(struct CoroutineHeader* coro)
 {
     // likely to be called from interrupt/exception handler!
 

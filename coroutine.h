@@ -2,16 +2,23 @@
 #include "linkedlist.h"
 #include "pico/stdlib.h"
 
-struct Coroutine
+struct CoroutineHeader
 {
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
     uint16_t                flags;
     int8_t                  sleepcount;
+};
+
+template <int StackSize_ = 64>
+struct Coroutine : CoroutineHeader
+{
+    static const int StackSize = StackSize_;
 
     // stack should be small, no need for recursive/deep callstacks.
     // BUT: if you want to use printf you need lots more than 128*4=512 bytes of stack!
-    volatile uint32_t       stack[256]  __attribute__((aligned(8)));
+    // the minium stack size is 64*4=256 bytes.
+    volatile uint32_t       stack[StackSize]  __attribute__((aligned(8)));
 };
 
 /**
@@ -21,6 +28,9 @@ struct Coroutine
 typedef void (*coroutinefp_t)(int);
 
 
+// stacksize in number of uint32_t
+extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
+
 /**
  * @brief Yields execution and starts another coroutine.
  * If called from an existing coroutine then it will eventually return.
@@ -29,13 +39,18 @@ typedef void (*coroutinefp_t)(int);
  * @param param a value to pass to coroutine entry point
  * @param storage stack etc for this new coroutine
  */
-extern void yield_and_start(coroutinefp_t func, int param, struct Coroutine* storage);
-extern void yield_and_exit();
-extern void yield();
-extern void yield_and_wait4time(absolute_time_t until);
-extern void yield_and_wait4wakeup();
+template <int StackSize>
+void yield_and_start(coroutinefp_t func, int param, struct Coroutine<StackSize>* storage)
+{
+    yield_and_start_ex(func, param, storage, StackSize);
+}
 
-extern void wakeup(struct Coroutine* coro);
+extern "C" void yield_and_exit();
+extern "C" void yield();
+extern "C" void yield_and_wait4time(absolute_time_t until);
+extern "C" void yield_and_wait4wakeup();
+
+extern "C" void wakeup(CoroutineHeader* coro);
 
 // FIXME: considered but prob a bad idea. too much caller specific application logic needs to happen in the right order to not loose an irq.
 //extern void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready);
