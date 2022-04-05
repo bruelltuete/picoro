@@ -26,47 +26,6 @@ static_assert((offsetof(struct Coroutine<>, stack) % 8) == 0);
 //static_assert(((int32_t) &((Coroutine<>*) 0)->stack[0]) % 8 == 0);
 
 
-#if 0
-static volatile bool* irqhandlercalled_12;
-static void irqhandler_12()     // DMA_IRQ_1
-{
-    irq_remove_handler(DMA_IRQ_1, irqhandler_12);
-    *irqhandlercalled_12 = true;
-    // FIXME: might have to get out of a timed wait function, if thats a thing another coro is executing.
-}
-
-void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready)
-{
-    // FIXME: how to add waiting4irq? schedule_next() needs the current coro in head. and each coro can only be in one queue.
-
-    irq_handler_t   handler = NULL;
-
-    switch (irqnum)
-    {
-        case DMA_IRQ_1: // 12
-            irqhandlercalled_12 = handlercalledalready;
-            handler = irqhandler_12;
-            break;
-        default:
-            assert(false);
-    }
-
-    // FIXME: this is all quite ugly... i need handlercalledalready to handle a race with the caller's handler: irq might have already happened when cpu gets here
-    //        but also if caller hooked up and enabled an irq without a handler, the irq might trigger before we get here.
-    //        there's quite a lot of setup that needs to happen in the right order for this to work...
-    //        and having handlercalledalready makes this whole function pointless i think.
-    
-    if (!(*handlercalledalready))
-        irq_add_shared_handler(irqnum, handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-
-    do
-    {
-        yield();
-    }
-    while (!(*handlercalledalready));
-}
-#endif
-
 // returns stack pointer for next coro
 extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 {
@@ -105,6 +64,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
             // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
             //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
             // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
+            // FIXME: another thing to check: when waiting for timeout, does wakeup() interrupt that waiting early? the pico-time funcs will retry waiting...
             __wfe();
             critical_section_enter_blocking(&lock);
 
@@ -182,31 +142,7 @@ static void entry_point_wrapper(coroutinefp_t func, int param)
 
 void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
-    Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
-    // for debugging
-    memset((void*) &ptrhelper->stack[0], 0, stacksize * sizeof(ptrhelper->stack[0]));
-
-    storage->flags = 0;
-    storage->sleepcount = 0;
-    const int bottom_element = stacksize;
-    // points to *past* the last element!
-    storage->sp = &ptrhelper->stack[bottom_element];
-    // "push" some values onto the stack.
-    // this needs to match what yield() does!
-    *--storage->sp = (uint32_t) entry_point_wrapper;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = param;     // r1
-    *--storage->sp = (uint32_t) func;      // r0
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
-    *--storage->sp = 0;
+    // FIXME: what if the to-be-started coro is already running?
 
     bool is_first_coro = false;
     if (!mainflow.sp)
@@ -226,6 +162,34 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         mainflow.flags |= FLAGS_DO_NOT_RESCHEDULE;
     }
 
+    Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
+    assert(((int32_t) &ptrhelper->stack[0]) % 8 == 0);
+    // for debugging
+    for (int i = 0; i < stacksize; ++i)
+        ptrhelper->stack[i] = 0xdeadbeef;
+
+    storage->flags = 0;
+    storage->sleepcount = 0;
+    const int bottom_element = stacksize;
+    // points to *past* the last element!
+    storage->sp = &ptrhelper->stack[bottom_element];
+    // "push" some values onto the stack.
+    // this needs to match what yield() does!
+    *--storage->sp = (uint32_t) entry_point_wrapper;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = param;             // r1
+    *--storage->sp = (uint32_t) func;   // r0
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+    *--storage->sp = 0;
+
     critical_section_enter_blocking(&lock);
     ll_push_back(&ready2run, &storage->llentry);
     critical_section_exit(&lock);
@@ -243,8 +207,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 void yield_and_exit()
 {
     critical_section_enter_blocking(&lock);
-    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
-    self->flags |= FLAGS_DO_NOT_RESCHEDULE;
+    {
+        struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+        self->flags |= FLAGS_DO_NOT_RESCHEDULE;
+    }
     critical_section_exit(&lock);
 
     yield();
@@ -253,10 +219,11 @@ void yield_and_exit()
 void yield_and_wait4time(absolute_time_t until)
 {
     critical_section_enter_blocking(&lock);
-
-    // FIXME
-    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
-    //self->flags |= FLAGS_PUT_IN_TIMER_QUEUE;
+    {
+        // FIXME
+        struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+        //self->flags |= FLAGS_PUT_IN_TIMER_QUEUE;
+    }
     critical_section_exit(&lock);
 
     yield();
@@ -265,8 +232,10 @@ void yield_and_wait4time(absolute_time_t until)
 void yield_and_wait4wakeup()
 {
     critical_section_enter_blocking(&lock);
-    struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
-    self->sleepcount++;
+    {
+        struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+        self->sleepcount++;
+    }
     critical_section_exit(&lock);
 
     yield();
@@ -286,6 +255,7 @@ void wakeup(struct CoroutineHeader* coro)
     if (ll_peek_head(&ready2run) != &coro->llentry)
     {
         // FIXME: this could make coro the head of the queue! which to schedule_next() means it's running.
+        //        i dont know yet what that will mean...
         ll_push_back(&ready2run, &coro->llentry);
     }
 

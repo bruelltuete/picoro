@@ -17,8 +17,10 @@ struct Coroutine : CoroutineHeader
 
     // stack should be small, no need for recursive/deep callstacks.
     // BUT: if you want to use printf you need lots more than 128*4=512 bytes of stack!
-    // the minium stack size is 64*4=256 bytes.
+    // the absolute minium stack size is 64*4=256 bytes. which is just enough to call yield_and_start() to start off a bunch of other coros.
+    // BEWARE: the time/timer/sleep functions in the pico-sdk need a lot of stack! 150*4=600 bytes or more!
     volatile uint32_t       stack[StackSize]  __attribute__((aligned(8)));
+    static_assert(StackSize >= 64);
 };
 
 /**
@@ -28,7 +30,7 @@ struct Coroutine : CoroutineHeader
 typedef void (*coroutinefp_t)(int);
 
 
-// stacksize in number of uint32_t
+// stacksize unit is number of uint32_ts
 extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
 
 /**
