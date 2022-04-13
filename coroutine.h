@@ -6,11 +6,14 @@ struct CoroutineHeader
 {
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
-    uint16_t                flags;
+    absolute_time_t         wakeuptime;
+    uint8_t                 flags;
     int8_t                  sleepcount;
+
+    // FIXME: consider PMU-protecting some of these fields against stack overflow (sp underflowing stack into the header).
 };
 
-template <int StackSize_ = 64>
+template <int StackSize_ = 256>
 struct Coroutine : CoroutineHeader
 {
     static const int StackSize = StackSize_;
@@ -37,6 +40,7 @@ extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeade
  * @brief Yields execution and starts another coroutine.
  * If called from an existing coroutine then it will eventually return.
  * If called from outside of coroutine it will only return when all currently running coroutines have finished.
+ * @warning Do not call from an IRQ handler! None of the yield() functions are safe to call from interrupts.
  * @param func entry point
  * @param param a value to pass to coroutine entry point
  * @param storage stack etc for this new coroutine
@@ -52,6 +56,10 @@ extern "C" void yield();
 extern "C" void yield_and_wait4time(absolute_time_t until);
 extern "C" void yield_and_wait4wakeup();
 
+/**
+ * @brief 
+ * Safe to call from IRQ handler.
+ */
 extern "C" void wakeup(CoroutineHeader* coro);
 
 // FIXME: considered but prob a bad idea. too much caller specific application logic needs to happen in the right order to not loose an irq.

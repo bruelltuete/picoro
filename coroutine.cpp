@@ -7,13 +7,10 @@
 // head is currently running.
 struct LinkedList   ready2run;
 struct LinkedList   waiting4timer;
-struct LinkedList   waiting4wakeup;
 critical_section_t  lock;
 
 
 #define FLAGS_DO_NOT_RESCHEDULE     (1 << 0)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
-#define FLAGS_PUT_IN_TIMER_QUEUE    (1 << 1)
-//#define FLAGS_PUT_IN_SLEEPING_QUEUE (1 << 2)
 
 
 static CoroutineHeader     mainflow;
@@ -26,63 +23,110 @@ static_assert((offsetof(struct Coroutine<>, stack) % 8) == 0);
 //static_assert(((int32_t) &((Coroutine<>*) 0)->stack[0]) % 8 == 0);
 
 
+static alarm_id_t       soonestalarmid = 0;
+static absolute_time_t  soonesttime2wake = at_the_end_of_time;
+
+static void prime_scheduler_timer_locked();     // forward decl
+
+static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
+{
+    wakeup(coro);
+
+    // FIXME: we'll have to re-arm the timer with whatever the next up timeout is!
+    soonesttime2wake = at_the_end_of_time;
+    prime_scheduler_timer_locked();
+
+    // FIXME: no need for sev here. wfe in schedule_next() wakes up without it. because wfe also wakes on interrupts???
+    //__sev();
+
+    return 0;
+}
+
+// assumes it gets called with lock held (or an equivalent of that).
+static void prime_scheduler_timer_locked()
+{
+    CoroutineHeader* waiting4timeoutcoro = LL_ACCESS(waiting4timeoutcoro, llentry, ll_peek_head(&waiting4timer));
+    if (waiting4timeoutcoro != NULL)
+    {
+        if (to_us_since_boot(waiting4timeoutcoro->wakeuptime) < to_us_since_boot(soonesttime2wake))
+        {
+            if (soonestalarmid != 0)
+                cancel_alarm(soonestalarmid);
+            soonesttime2wake = waiting4timeoutcoro->wakeuptime;
+            // FIXME: replace sdk alarm stuff with raw hw alarm.
+            soonestalarmid = add_alarm_at(soonesttime2wake, (alarm_callback_t) timeouthandler, waiting4timeoutcoro, false);
+            assert(soonestalarmid != -1);   // error
+            if (soonestalarmid == 0)
+            {
+                // timeout has expired already, back on the run queue.
+                ll_pop_front(&waiting4timer);
+                ll_push_front(&ready2run, &waiting4timeoutcoro->llentry);
+            }
+        }
+    }
+}
+
 // returns stack pointer for next coro
+// the extern-C is here because i want an unmangled name that's easy to be called from yield()'s asm section.
 extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 {
     critical_section_enter_blocking(&lock);
 
+    // there should always be at least the currently running coro in ready2run.
     assert(!ll_is_empty(&ready2run));
+
     struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
     currentcoro->sp = current_sp;
 
     bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
-    bool is_waiting4time = currentcoro->flags & FLAGS_PUT_IN_TIMER_QUEUE;
     bool is_sleeping = currentcoro->sleepcount > 0;
 
-    if (is_waiting4time)
-    {
-        assert(!is_sleeping);
-        ll_push_back(&waiting4timer, &currentcoro->llentry);
-        is_resched = false;
-    }
     if (is_sleeping)
     {
-        assert(!is_waiting4time);
-        ll_push_back(&waiting4wakeup, &currentcoro->llentry);
         is_resched = false;
+
+        if (is_at_the_end_of_time(currentcoro->wakeuptime))
+            ll_push_back(&waiting4timer, &currentcoro->llentry);
+        else
+            // FIXME: we assume the wait queue is sorted, soonest timeout first.
+            //        lame sorting here: if indefinite wait then just add to the end. if specific timeout then to front.
+            ll_push_front(&waiting4timer, &currentcoro->llentry);
     }
 
     if (is_resched)
         ll_push_back(&ready2run, &currentcoro->llentry);
 
+    prime_scheduler_timer_locked();
 
-    if (ll_is_empty(&ready2run))
+    while (ll_is_empty(&ready2run))
     {
-        while (!ll_is_empty(&waiting4wakeup))
+        // anyone waiting for timeout or for explicit wakeup?
+        if (ll_is_empty(&waiting4timer))
         {
+            // if nothing in timer queue then return to mainflow (nothing left to execute).
             critical_section_exit(&lock);
-            // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
-            //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
-            // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
-            // FIXME: another thing to check: when waiting for timeout, does wakeup() interrupt that waiting early? the pico-time funcs will retry waiting...
-            __wfe();
-            critical_section_enter_blocking(&lock);
-
-            if (!ll_is_empty(&ready2run))
-                goto gotonext;
+            return mainflow.sp;
         }
 
-        // nothing ready to run, check if there's anything waiting on timeout.
-        // if timeout has not yet elapsed then sleep.
-        // if nothing in timer queue then return to mainflow (nothing left to execute).
-
         critical_section_exit(&lock);
-        return mainflow.sp;
+
+        // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
+        //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
+        // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
+        // FIXME: another thing to check: when waiting for timeout, does wakeup() interrupt that waiting early? the pico-time funcs will retry waiting...
+
+
+        // if we dont have a specific time to wake up at then just wait for anything...
+        // might be spurious wakeup. in that case just re-check if we have anything to execute right now and if not sleep again.
+        __wfe();
+
+        critical_section_enter_blocking(&lock);
+
+        // remember: this is all single threaded, so the only functions that could have modified the lists are interrupt handlers.
+        // things like wakeup().
     }
 
-    struct CoroutineHeader* upnext;
-gotonext:
-    upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
+    struct CoroutineHeader* upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
 
     critical_section_exit(&lock);
     return upnext->sp;
@@ -150,8 +194,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         is_first_coro = true;
         ll_init_list(&ready2run);
         ll_init_list(&waiting4timer);
-        ll_init_list(&waiting4wakeup);
         critical_section_init(&lock);
+
+        soonesttime2wake = at_the_end_of_time;
+        soonestalarmid = 0;
 
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
@@ -220,9 +266,9 @@ void yield_and_wait4time(absolute_time_t until)
 {
     critical_section_enter_blocking(&lock);
     {
-        // FIXME
         struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
-        //self->flags |= FLAGS_PUT_IN_TIMER_QUEUE;
+        self->sleepcount++;
+        self->wakeuptime = until;
     }
     critical_section_exit(&lock);
 
@@ -231,27 +277,21 @@ void yield_and_wait4time(absolute_time_t until)
 
 void yield_and_wait4wakeup()
 {
-    critical_section_enter_blocking(&lock);
-    {
-        struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
-        self->sleepcount++;
-    }
-    critical_section_exit(&lock);
-
-    yield();
+    yield_and_wait4time(at_the_end_of_time);
 }
 
-void wakeup(struct CoroutineHeader* coro)
+void wakeup(CoroutineHeader* coro)
 {
     // likely to be called from interrupt/exception handler!
 
     critical_section_enter_blocking(&lock);
 
-
-    // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4wakeup.
+    // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4timer.
     coro->sleepcount--;
-    ll_remove(&waiting4wakeup, &coro->llentry);
+    coro->wakeuptime = nil_time;
+    ll_remove(&waiting4timer, &coro->llentry);
 
+    // the current coro might not have had a chance yet to call yield_and_wait4wakeup() and is thus still running.
     if (ll_peek_head(&ready2run) != &coro->llentry)
     {
         // FIXME: this could make coro the head of the queue! which to schedule_next() means it's running.

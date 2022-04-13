@@ -132,9 +132,15 @@ static inline void ll_remove(struct LinkedList* list, struct LinkedListEntry* va
     }
 }
 
-#define LL_ACCESS_INTERNAL(type, given, offset)      ((type) (((uint8_t*) (given)) + offset))
-#define LL_ACCESS(enclosingstructptr, listentrymembername, ptr)   LL_ACCESS_INTERNAL(typeof(enclosingstructptr), ptr, -offsetof(typeof(*enclosingstructptr), listentrymembername))
+template <typename T>
+T LL_ACCESS_INTERNAL(void* given, int offset)
+{
+    if (given == NULL)
+        return NULL;
+    return ((T) (((uint8_t*) (given)) + offset));
+}
 
+#define LL_ACCESS(enclosingstructptr, listentrymembername, ptr)   LL_ACCESS_INTERNAL<typeof(enclosingstructptr)>(ptr, -offsetof(typeof(*enclosingstructptr), listentrymembername))
 
 struct UnitTestListEntry
 {
