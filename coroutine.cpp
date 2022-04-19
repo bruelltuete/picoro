@@ -15,6 +15,10 @@ critical_section_t  lock;
 
 static CoroutineHeader     mainflow;
 
+// separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
+// (instead of only once here)
+volatile uint32_t scheduler_stack[512]  __attribute__((aligned(8)));
+
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
 static_assert(sizeof(mainflow.llentry) == 4);
 // arm docs say that stack pointer should be 8 byte aligned, at a public interface.
@@ -130,7 +134,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     return upnext->sp;
 }
 
-void __attribute__ ((naked)) yield()
+void __attribute__ ((naked)) yield1(volatile uint32_t* schedsp)
 {
     __asm volatile (
         // old stack is still active
@@ -146,9 +150,12 @@ void __attribute__ ((naked)) yield()
         "push {r1, r2, r3, r4, r5};"
         // insight: we do not need to preserve pc! execution will always continue from here on (just with a different stack).
 
-        "mov r0, sp;"
+        "mov r1, sp;"     // capture stack for current coro
+        "mov sp, r0;"     // switch to scheduler stack
+
+        "mov r0, r1;"
         "bl schedule_next;"
-        "mov sp, r0;"
+        "mov sp, r0;"     // activate stack for new coro
 
         // restore all those registers with the new stack.
         "pop {r1, r2, r3, r4, r5};"
@@ -167,6 +174,14 @@ void __attribute__ ((naked)) yield()
     // will not get here
     while (true)
         __breakpoint();
+}
+
+void yield()
+{
+    // ugh, the asm syntax is beyond me... by calling another func we are at least (guaranteed?) to get this value in r0.
+    // at least thats what the calling convention says.
+    volatile uint32_t* schedsp = &scheduler_stack[sizeof(scheduler_stack) / sizeof(scheduler_stack[0])];
+    yield1(schedsp);
 }
 
 // One extra step for calling coro's entry point to make sure there's a yield_and_exit() when it returns.
@@ -196,6 +211,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
         soonesttime2wake = at_the_end_of_time;
         soonestalarmid = 0;
+
+        // for debugging
+        for (int i = 0; i < sizeof(scheduler_stack) / sizeof(scheduler_stack[i]); ++i)
+            scheduler_stack[i] = 0xdeadbeef;
 
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
