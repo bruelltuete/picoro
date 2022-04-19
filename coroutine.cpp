@@ -32,7 +32,7 @@ static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 {
     wakeup(coro);
 
-    // FIXME: we'll have to re-arm the timer with whatever the next up timeout is!
+    // we'll have to re-arm the timer with whatever the next up timeout is!
     soonesttime2wake = at_the_end_of_time;
     prime_scheduler_timer_locked();
 
@@ -88,9 +88,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
         if (is_at_the_end_of_time(currentcoro->wakeuptime))
             ll_push_back(&waiting4timer, &currentcoro->llentry);
         else
-            // FIXME: we assume the wait queue is sorted, soonest timeout first.
-            //        lame sorting here: if indefinite wait then just add to the end. if specific timeout then to front.
-            ll_push_front(&waiting4timer, &currentcoro->llentry);
+            ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
     }
 
     if (is_resched)

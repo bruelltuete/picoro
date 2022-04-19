@@ -111,6 +111,12 @@ static inline struct LinkedListEntry* ll_pop_front(struct LinkedList* list)
     return value;
 }
 
+/**
+ * @brief Removes the given value from the list by scanning for it from the head towards the tail until found.
+ * If value is not contained in the list then nothing happens, apart from wasting time scanning through the list.
+ * @param list 
+ * @param value 
+ */
 static inline void ll_remove(struct LinkedList* list, struct LinkedListEntry* value)
 {
     for (struct LinkedListEntry* i = list->head, *p = NULL; i != NULL; p = i, i = i->next)
@@ -140,6 +146,41 @@ T LL_ACCESS_INTERNAL(void* given, int offset)
     return ((T) (((uint8_t*) (given)) + offset));
 }
 
+// value is inserted at a position if its comparison says it's lower. otherwise after.
+template <int offsetFromListEntry = -8, typename T = uint64_t>
+static inline void ll_sorted_insert(struct LinkedList* list, struct LinkedListEntry* value)
+{
+    // shortcut
+    if (list->head == NULL)
+    {
+        assert(list->tail == NULL);
+        list->head = list->tail = value;
+        value->next = NULL;
+        return;
+    }
+        
+    const T& vb = *LL_ACCESS_INTERNAL<T*>(value, offsetFromListEntry);
+
+    for (struct LinkedListEntry* i = list->head, *p = NULL; i != NULL; p = i, i = i->next)
+    {
+        const T& va = *LL_ACCESS_INTERNAL<T*>(i, offsetFromListEntry);
+        if (vb <= va)
+        {
+            // insert before the current node i
+            if (p == NULL)
+                list->head = value;
+            else
+                p->next = value;
+            value->next = i;
+            return;
+        }
+    }
+
+    list->tail->next = value;
+    value->next = NULL;
+    list->tail = value;
+}
+
 #define LL_ACCESS(enclosingstructptr, listentrymembername, ptr)   LL_ACCESS_INTERNAL<typeof(enclosingstructptr)>(ptr, -offsetof(typeof(*enclosingstructptr), listentrymembername))
 
 struct UnitTestListEntry
@@ -163,13 +204,13 @@ static inline void ll_unit_test()
     // push_back
 
     struct UnitTestListEntry value1;
-    value1.someothervalue = 1234567890;
+    value1.someothervalue = 111111111;
     ll_push_back(&list, &value1.listentry);
     empty = ll_is_empty(&list);
     assert(!empty);
 
     struct UnitTestListEntry value2;
-    value2.someothervalue = 987654321;
+    value2.someothervalue = 222222222;
     ll_push_back(&list, &value2.listentry);
 
 
@@ -209,9 +250,11 @@ static inline void ll_unit_test()
     // push_front
 
     struct UnitTestListEntry value3;
+    value3.someothervalue = 333333333;
     ll_push_front(&list, &value3.listentry);
 
     struct UnitTestListEntry value4;
+    value4.someothervalue = 444444444;
     ll_push_front(&list, &value4.listentry);
 
     struct LinkedListEntry* front4 = ll_pop_front(&list);
@@ -242,4 +285,25 @@ static inline void ll_unit_test()
     ll_remove(&list, &value3.listentry);        // remove in the middle
     assert(&value2.listentry == ll_peek_head(&list));
     assert(&value1.listentry == ll_peek_tail(&list));
+
+
+    // ll_sorted_insert
+
+    ll_pop_front(&list);    // empty list
+    ll_pop_front(&list);
+    assert(ll_is_empty(&list));
+    ll_sorted_insert<(int) offsetof(UnitTestListEntry, someothervalue) - (int) offsetof(UnitTestListEntry, listentry), uint32_t>(&list, &value2.listentry);
+    assert(&value2.listentry == ll_peek_head(&list));
+
+    ll_sorted_insert<(int) offsetof(UnitTestListEntry, someothervalue) - (int) offsetof(UnitTestListEntry, listentry), uint32_t>(&list, &value3.listentry);
+    assert(&value2.listentry == ll_peek_head(&list));
+    assert(&value3.listentry == ll_peek_tail(&list));
+
+    ll_sorted_insert<(int) offsetof(UnitTestListEntry, someothervalue) - (int) offsetof(UnitTestListEntry, listentry), uint32_t>(&list, &value1.listentry);
+    assert(&value1.listentry == ll_peek_head(&list));
+    assert(&value3.listentry == ll_peek_tail(&list));
+
+    ll_sorted_insert<(int) offsetof(UnitTestListEntry, someothervalue) - (int) offsetof(UnitTestListEntry, listentry), uint32_t>(&list, &value4.listentry);
+    assert(&value1.listentry == ll_peek_head(&list));
+    assert(&value4.listentry == ll_peek_tail(&list));
 }

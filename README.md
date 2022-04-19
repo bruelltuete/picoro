@@ -7,3 +7,4 @@ Simple cooperative multi-tasking was good enough.
 
 * No attempt at API stability, feel free to fork and change in any way you see fit.
 * This lib is for me hacking on a lazy weekend afternoon, along the same line as the point above.
+* Feel free to suggest better ways of doing this.
