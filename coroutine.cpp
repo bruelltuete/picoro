@@ -31,18 +31,28 @@ static alarm_id_t       soonestalarmid = 0;
 static absolute_time_t  soonesttime2wake = at_the_end_of_time;
 
 static void prime_scheduler_timer_locked();     // forward decl
+static void wakeup_locked(CoroutineHeader* coro);
 
 static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 {
-    wakeup(coro);
+    assert(coro != NULL);
+
+    critical_section_enter_blocking(&lock);
+
+    // this should be the case.
+    // but might not be guaranteed???
+    assert(&coro->llentry == ll_peek_head(&waiting4timer));
+
+    wakeup_locked(coro);
 
     // we'll have to re-arm the timer with whatever the next up timeout is!
     soonesttime2wake = at_the_end_of_time;
     prime_scheduler_timer_locked();
 
-    // FIXME: no need for sev here. wfe in schedule_next() wakes up without it. because wfe also wakes on interrupts???
+    // FIXME: no need for sev here? wfe in schedule_next() wakes up without it. because wfe also wakes on interrupts???
     //__sev();
 
+    critical_section_exit(&lock);
     return 0;
 }
 
@@ -304,12 +314,9 @@ void yield_and_wait4wakeup()
     yield_and_wait4time(at_the_end_of_time);
 }
 
-void wakeup(CoroutineHeader* coro)
+/** @internal */
+static void wakeup_locked(CoroutineHeader* coro)
 {
-    // likely to be called from interrupt/exception handler!
-
-    critical_section_enter_blocking(&lock);
-
     // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4timer.
     coro->sleepcount--;
     coro->wakeuptime = nil_time;
@@ -322,7 +329,14 @@ void wakeup(CoroutineHeader* coro)
         //        i dont know yet what that will mean...
         ll_push_back(&ready2run, &coro->llentry);
     }
+}
 
+void wakeup(CoroutineHeader* coro)
+{
+    // likely to be called from interrupt/exception handler!
+
+    critical_section_enter_blocking(&lock);
+    wakeup_locked(coro);
     critical_section_exit(&lock);
 
     // never ever call yield() here!
