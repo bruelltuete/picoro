@@ -49,24 +49,31 @@ static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 // assumes it gets called with lock held (or an equivalent of that).
 static void prime_scheduler_timer_locked()
 {
-    CoroutineHeader* waiting4timeoutcoro = LL_ACCESS(waiting4timeoutcoro, llentry, ll_peek_head(&waiting4timer));
-    if (waiting4timeoutcoro != NULL)
+    while (true)
     {
-        if (to_us_since_boot(waiting4timeoutcoro->wakeuptime) < to_us_since_boot(soonesttime2wake))
+        CoroutineHeader* waiting4timeoutcoro = LL_ACCESS(waiting4timeoutcoro, llentry, ll_peek_head(&waiting4timer));
+        if (waiting4timeoutcoro != NULL)
         {
-            if (soonestalarmid != 0)
-                cancel_alarm(soonestalarmid);
-            soonesttime2wake = waiting4timeoutcoro->wakeuptime;
-            // FIXME: replace sdk alarm stuff with raw hw alarm.
-            soonestalarmid = add_alarm_at(soonesttime2wake, (alarm_callback_t) timeouthandler, waiting4timeoutcoro, false);
-            assert(soonestalarmid != -1);   // error
-            if (soonestalarmid == 0)
+            if (to_us_since_boot(waiting4timeoutcoro->wakeuptime) < to_us_since_boot(soonesttime2wake))
             {
-                // timeout has expired already, back on the run queue.
-                ll_pop_front(&waiting4timer);
-                ll_push_front(&ready2run, &waiting4timeoutcoro->llentry);
+                if (soonestalarmid != 0)
+                    cancel_alarm(soonestalarmid);
+                soonesttime2wake = waiting4timeoutcoro->wakeuptime;
+                // FIXME: replace sdk alarm stuff with raw hw alarm.
+                soonestalarmid = add_alarm_at(soonesttime2wake, (alarm_callback_t) timeouthandler, waiting4timeoutcoro, false);
+                assert(soonestalarmid != -1);   // error
+                if (soonestalarmid == 0)
+                {
+                    // timeout has expired already, back on the run queue.
+                    ll_pop_front(&waiting4timer);
+                    ll_push_front(&ready2run, &waiting4timeoutcoro->llentry);
+                    // need to set up a timer for the coro waiting next up!
+                    soonesttime2wake = at_the_end_of_time;
+                    continue;
+                }
             }
         }
+        break;
     }
 }
 
