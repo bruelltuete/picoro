@@ -10,7 +10,7 @@ struct LinkedList   waiting4timer;
 critical_section_t  lock;
 
 
-#define FLAGS_DO_NOT_RESCHEDULE     (1 << 0)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
+#define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
 
 static CoroutineHeader     mainflow;
@@ -30,8 +30,11 @@ static_assert((offsetof(struct Coroutine<>, stack) % 8) == 0);
 static alarm_id_t       soonestalarmid = 0;
 static absolute_time_t  soonesttime2wake = at_the_end_of_time;
 
-static void prime_scheduler_timer_locked();     // forward decl
+// forward decls
+static void prime_scheduler_timer_locked();
 static void wakeup_locked(CoroutineHeader* coro);
+static bool is_live(CoroutineHeader* storage, int stacksize);
+
 
 static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 {
@@ -76,7 +79,10 @@ static void prime_scheduler_timer_locked()
                 {
                     // timeout has expired already, back on the run queue.
                     ll_pop_front(&waiting4timer);
-                    ll_push_front(&ready2run, &waiting4timeoutcoro->llentry);
+                    // it may be tempting to put waiting4timeoutcoro in the front of ready2run, given that it's already late for its turn.
+                    // BUT: the head of ready2run may currently be executing! and we've been called from a timer irq.
+                    // cannot just swap out the currently running task! that'd be preemptive multitasking. we are doing cooperative multitasking.
+                    ll_push_back(&ready2run, &waiting4timeoutcoro->llentry);
                     // need to set up a timer for the coro waiting next up!
                     soonesttime2wake = at_the_end_of_time;
                     continue;
@@ -96,24 +102,46 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     // there should always be at least the currently running coro in ready2run.
     assert(!ll_is_empty(&ready2run));
 
-    struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
-    currentcoro->sp = current_sp;
-
-    bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
-    bool is_sleeping = currentcoro->sleepcount > 0;
-
-    if (is_sleeping)
+    // scoping to avoid too much reach for currentcoro.
     {
-        is_resched = false;
+        struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
+        currentcoro->sp = current_sp;
 
-        if (is_at_the_end_of_time(currentcoro->wakeuptime))
-            ll_push_back(&waiting4timer, &currentcoro->llentry);
-        else
-            ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
+        // debug: hopefully we'll catch mem corruption cases earlier than the hardfault exception
+        if (currentcoro != &mainflow)
+        {
+            assert(is_live(currentcoro, currentcoro->stacksize));
+        }
+
+        bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
+        bool is_sleeping = currentcoro->sleepcount > 0;
+
+        // here, this indicates that currentcoro is exiting.
+        if (!is_resched)
+        {
+            assert(!is_sleeping);
+            // mark stack pointer as invalid.
+            // trying to resume this will crash very quickly.
+            // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
+            currentcoro->sp = (uint32_t*) 1;
+
+            if (currentcoro->waitchain)
+                wakeup_locked(currentcoro->waitchain);
+        }
+
+        if (is_sleeping)
+        {
+            is_resched = false;
+
+            if (is_at_the_end_of_time(currentcoro->wakeuptime))
+                ll_push_back(&waiting4timer, &currentcoro->llentry);
+            else
+                ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
+        }
+
+        if (is_resched)
+            ll_push_back(&ready2run, &currentcoro->llentry);
     }
-
-    if (is_resched)
-        ll_push_back(&ready2run, &currentcoro->llentry);
 
     prime_scheduler_timer_locked();
 
@@ -204,19 +232,34 @@ void yield()
 // One extra step for calling coro's entry point to make sure there's a yield_and_exit() when it returns.
 static void entry_point_wrapper(coroutinefp_t func, int param)
 {
-    func(param);
+    uint32_t rv = func(param);
 
     // will never return here!
-    yield_and_exit();
+    yield_and_exit(rv);
 
     // but if we do by accident somehow...
     while (true)
         __breakpoint();
 }
 
+static bool is_live(CoroutineHeader* storage, int stacksize)
+{
+    Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
+
+    // stack pointer should point to somewhere within the stack.
+    bool is_below_top    = ptrhelper->sp > &ptrhelper->stack[0];
+    bool is_above_bottom = ptrhelper->sp < &ptrhelper->stack[stacksize];
+
+    return is_below_top && is_above_bottom;
+}
+
 void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
-    // FIXME: what if the to-be-started coro is already running?
+    if (is_live(storage, stacksize))
+    {
+        yield();
+        return;
+    }
 
     bool is_first_coro = false;
     if (!mainflow.sp)
@@ -248,8 +291,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     for (int i = 0; i < stacksize; ++i)
         ptrhelper->stack[i] = 0xdeadbeef;
 
+    storage->waitchain = NULL;
     storage->flags = 0;
     storage->sleepcount = 0;
+    storage->stacksize = stacksize;
     const int bottom_element = stacksize;
     // points to *past* the last element!
     storage->sp = &ptrhelper->stack[bottom_element];
@@ -284,12 +329,13 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     }
 }
 
-void yield_and_exit()
+void yield_and_exit(uint32_t exitcode)
 {
     critical_section_enter_blocking(&lock);
     {
         struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
         self->flags |= FLAGS_DO_NOT_RESCHEDULE;
+        self->exitcode = exitcode;
     }
     critical_section_exit(&lock);
 
@@ -314,9 +360,43 @@ void yield_and_wait4wakeup()
     yield_and_wait4time(at_the_end_of_time);
 }
 
+uint32_t yield_and_wait4other(CoroutineHeader* other)
+{
+    // debug
+    struct CoroutineHeader* oldself = 0;
+    critical_section_enter_blocking(&lock);
+    {
+        oldself = LL_ACCESS(oldself, llentry, ll_peek_head(&ready2run));
+    }
+    critical_section_exit(&lock);
+
+
+    while (is_live(other, other->stacksize))
+    {
+        critical_section_enter_blocking(&lock);
+        {
+            struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
+            assert(self == oldself);
+
+            // there is a "race" condition: coro1 and coro2 both wait for coro3 to exit, coro1 wakes first and rescheds coro3, then could happen that coro2 never wakes up.
+            other->waitchain = self;    // FIXME: hack
+        }
+        critical_section_exit(&lock);
+
+        // FIXME: if we wanted to be stingy on header space we could recycle llentry as a wait chain.
+        //        at the cost of making management of waiting4timer more complicated.
+        yield_and_wait4wakeup();
+    }
+
+    return other->exitcode;
+}
+
 /** @internal */
 static void wakeup_locked(CoroutineHeader* coro)
 {
+    // may not be true! with old stray timer alarms.
+    assert(is_live(coro, coro->stacksize));
+
     // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4timer.
     coro->sleepcount--;
     coro->wakeuptime = nil_time;

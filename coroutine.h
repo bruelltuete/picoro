@@ -7,6 +7,9 @@ struct CoroutineHeader
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
     absolute_time_t         wakeuptime;
+    CoroutineHeader*        waitchain;  // FIXME: figure out how to recycle llentry for this.
+    uint32_t                exitcode;   // there's prob a way that we could recycle the stack to store this, given that the stack is no longer useful (coro exited, remember)
+    uint16_t                stacksize;  // ideally we wouldnt need this one.
     uint8_t                 flags;
     int8_t                  sleepcount;
 
@@ -28,10 +31,11 @@ struct Coroutine : CoroutineHeader
 
 /**
  * Entry-point for our coroutine.
- * Looks like \code void myfunc(int param) \endcode
+ * Looks like \code uint32_t myfunc(int param) \endcode
+ * The return value is the exit code, which can be queried later via FIXME.
  */
-typedef void (*coroutinefp_t)(int);
-
+typedef uint32_t (*coroutinefp_t)(int);
+static_assert(sizeof(uint32_t) >= sizeof(void*));
 
 // stacksize unit is number of uint32_ts
 extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
@@ -40,7 +44,11 @@ extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeade
  * @brief Yields execution and starts another coroutine.
  * If called from an existing coroutine then it will eventually return.
  * If called from outside of coroutine it will only return when all currently running coroutines have finished.
+ * A coroutine that has been previously started but has not exited yet is considered "live".
+ * Starting a "live" coroutine does nothing, the attempt is ignored.
+ * 
  * @warning Do not call from an IRQ handler! None of the yield() functions are safe to call from interrupts.
+ * 
  * @param func entry point
  * @param param a value to pass to coroutine entry point
  * @param storage stack etc for this new coroutine
@@ -51,10 +59,18 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine<StackSize>*
     yield_and_start_ex(func, param, storage, StackSize);
 }
 
-extern "C" void yield_and_exit();
+extern "C" void yield_and_exit(uint32_t exitcode = 0);
 extern "C" void yield();
 extern "C" void yield_and_wait4time(absolute_time_t until);
 extern "C" void yield_and_wait4wakeup();
+
+/**
+ * @brief Yields execution until "other" has exited.
+ * @return exit code of "other"
+ */
+extern "C" uint32_t yield_and_wait4other(CoroutineHeader* other);
+// FIXME: i prob want to wait for more than one... no idea how yet.
+//extern "C" uint32_t yield_and_wait4others();
 
 /**
  * @brief 

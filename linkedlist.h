@@ -108,6 +108,9 @@ static inline struct LinkedListEntry* ll_pop_front(struct LinkedList* list)
     if (newhead == NULL)
         list->tail = NULL;
 
+    // debugging
+    value->next = (LinkedListEntry*) 0xdeadbeef;
+
     return value;
 }
 
@@ -132,6 +135,9 @@ static inline void ll_remove(struct LinkedList* list, struct LinkedListEntry* va
                 assert(p->next == i);
                 p->next = i->next;
             }
+
+            // debugging
+            i->next = (LinkedListEntry*) 0xdeadbeef;
 
             return;
         }
