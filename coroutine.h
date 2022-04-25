@@ -34,7 +34,7 @@ struct Coroutine : CoroutineHeader
  * Looks like \code uint32_t myfunc(int param) \endcode
  * The return value is the exit code, which can be queried later via FIXME.
  */
-typedef uint32_t (*coroutinefp_t)(int);
+typedef uint32_t (*coroutinefp_t)(uint32_t);
 static_assert(sizeof(uint32_t) >= sizeof(void*));
 
 // stacksize unit is number of uint32_ts
