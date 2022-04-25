@@ -272,9 +272,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         soonesttime2wake = at_the_end_of_time;
         soonestalarmid = 0;
 
-        // for debugging
+#ifndef NDEBUG
         for (int i = 0; i < sizeof(scheduler_stack) / sizeof(scheduler_stack[i]); ++i)
             scheduler_stack[i] = 0xdeadbeef;
+#endif
 
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
@@ -287,9 +288,11 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
     Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
     assert(((int32_t) &ptrhelper->stack[0]) % 8 == 0);
-    // for debugging
+
+#ifndef NDEBUG  // for debugging
     for (int i = 0; i < stacksize; ++i)
         ptrhelper->stack[i] = 0xdeadbeef;
+#endif
 
     storage->waitchain = NULL;
     storage->flags = 0;
@@ -362,14 +365,14 @@ void yield_and_wait4wakeup()
 
 uint32_t yield_and_wait4other(CoroutineHeader* other)
 {
-    // debug
+#ifndef NDEBUG  // for debugging
     struct CoroutineHeader* oldself = 0;
     critical_section_enter_blocking(&lock);
     {
         oldself = LL_ACCESS(oldself, llentry, ll_peek_head(&ready2run));
     }
     critical_section_exit(&lock);
-
+#endif
 
     while (is_live(other, other->stacksize))
     {
@@ -394,8 +397,10 @@ uint32_t yield_and_wait4other(CoroutineHeader* other)
 /** @internal */
 static void wakeup_locked(CoroutineHeader* coro)
 {
-    // may not be true! with old stray timer alarms.
+#ifndef NDEBUG  // for debugging
+    // may not be true? with old stray timer alarms.
     assert(is_live(coro, coro->stacksize));
+#endif
 
     // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4timer.
     coro->sleepcount--;
