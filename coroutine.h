@@ -2,12 +2,22 @@
 #include "linkedlist.h"
 #include "pico/stdlib.h"
 
-struct CoroutineHeader
+
+// forward decl
+struct CoroutineHeader;
+
+struct Waitable
+{
+    CoroutineHeader*    waitchain;
+    // FIXME: i'm not sure i want a counting semaphore...
+    int8_t              semaphore;      // >0 means signalled.
+};
+
+struct CoroutineHeader : Waitable
 {
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
     absolute_time_t         wakeuptime;
-    CoroutineHeader*        waitchain;  // FIXME: figure out how to recycle llentry for this.
     uint32_t                exitcode;   // there's prob a way that we could recycle the stack to store this, given that the stack is no longer useful (coro exited, remember)
     uint16_t                stacksize;  // ideally we wouldnt need this one.
     uint8_t                 flags;
@@ -38,7 +48,18 @@ typedef uint32_t (*coroutinefp_t)(uint32_t);
 static_assert(sizeof(uint32_t) >= sizeof(void*));
 
 // stacksize unit is number of uint32_ts
-extern "C" void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
+extern void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
+
+/**
+ * @brief Exits the currently running coroutine by taking it off the scheduler and yielding.
+ * Does not return.
+ * The current coroutine will "signal" once it's dead, i.e. you can use yield_and_wait4signal() to wait for a coroutine to finish.
+ * @param exitcode 
+ */
+extern void yield_and_exit(uint32_t exitcode = 0);
+extern void yield_and_wait4time(absolute_time_t until);
+extern void yield_and_wait4wakeup();
+extern void yield();
 
 /**
  * @brief Yields execution and starts another coroutine.
@@ -59,16 +80,10 @@ void yield_and_start(coroutinefp_t func, int param, struct Coroutine<StackSize>*
     yield_and_start_ex(func, param, storage, StackSize);
 }
 
-extern "C" void yield_and_exit(uint32_t exitcode = 0);
-extern "C" void yield();
-extern "C" void yield_and_wait4time(absolute_time_t until);
-extern "C" void yield_and_wait4wakeup();
-
 /**
- * @brief Yields execution until "other" has exited.
- * @return exit code of "other"
+ * @brief Yields execution until "other" has exited/signaled.
  */
-extern "C" uint32_t yield_and_wait4other(CoroutineHeader* other);
+extern void yield_and_wait4signal(Waitable* other);
 // FIXME: i prob want to wait for more than one... no idea how yet.
 //extern "C" uint32_t yield_and_wait4others();
 
@@ -76,7 +91,10 @@ extern "C" uint32_t yield_and_wait4other(CoroutineHeader* other);
  * @brief 
  * Safe to call from IRQ handler.
  */
-extern "C" void wakeup(CoroutineHeader* coro);
+extern void wakeup(CoroutineHeader* coro);
+
+// Beware: do not mix wakeup() and signal()! I.e. yield_and_wait4wakeup() and wakeup() is fine; yield_and_wait4signal() and signal() is fine; but don't mix!
+extern void signal(Waitable* waitable);
 
 // FIXME: considered but prob a bad idea. too much caller specific application logic needs to happen in the right order to not loose an irq.
 //extern void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready);

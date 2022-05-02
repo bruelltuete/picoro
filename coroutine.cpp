@@ -125,8 +125,13 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
             // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
             currentcoro->sp = (uint32_t*) 1;
 
+            // when a coro exits the semaphore count doesnt matter: anyone who waits will be woken up.
+            currentcoro->semaphore = 0x7F;
             if (currentcoro->waitchain)
-                wakeup_locked(currentcoro->waitchain);
+            {
+                wakeup_locked(currentcoro->waitchain);  // FIXME: do proper chain stuff!
+                currentcoro->waitchain = NULL;
+            }
         }
 
         if (is_sleeping)
@@ -141,7 +146,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 
         if (is_resched)
             ll_push_back(&ready2run, &currentcoro->llentry);
-    }
+    } // scoping for var visibility
 
     prime_scheduler_timer_locked();
 
@@ -284,6 +289,8 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
         // run this pseudo coro only once (right now).
         mainflow.flags |= FLAGS_DO_NOT_RESCHEDULE;
+        // cannot wait for mainflow to finish running, it'll always outlive any and all coros!
+        mainflow.semaphore = 0x7F;
     }
 
     Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
@@ -295,6 +302,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 #endif
 
     storage->waitchain = NULL;
+    storage->semaphore = 0;
     storage->flags = 0;
     storage->sleepcount = 0;
     storage->stacksize = stacksize;
@@ -363,26 +371,38 @@ void yield_and_wait4wakeup()
     yield_and_wait4time(at_the_end_of_time);
 }
 
-uint32_t yield_and_wait4other(CoroutineHeader* other)
+void yield_and_wait4signal(Waitable* other)
 {
 #ifndef NDEBUG  // for debugging
     struct CoroutineHeader* oldself = 0;
     critical_section_enter_blocking(&lock);
     {
         oldself = LL_ACCESS(oldself, llentry, ll_peek_head(&ready2run));
+
+        // FIXME: for the time being, only 1 coro can wait. so better check that there isnt one waiting already.
+        assert(other->waitchain == NULL);
     }
     critical_section_exit(&lock);
 #endif
 
-    while (is_live(other, other->stacksize))
+    while (true)
     {
         critical_section_enter_blocking(&lock);
         {
+            if (other->semaphore > 0)
+            {
+                // see signal(). this is currently handled by signal() and should always be the case.
+                assert(other->waitchain == NULL);
+
+                other->semaphore--;
+                critical_section_exit(&lock);
+                break;
+            }
             struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
             assert(self == oldself);
 
             // there is a "race" condition: coro1 and coro2 both wait for coro3 to exit, coro1 wakes first and rescheds coro3, then could happen that coro2 never wakes up.
-            other->waitchain = self;    // FIXME: hack
+            other->waitchain = self;        // FIXME: do proper chain stuff!
         }
         critical_section_exit(&lock);
 
@@ -390,8 +410,6 @@ uint32_t yield_and_wait4other(CoroutineHeader* other)
         //        at the cost of making management of waiting4timer more complicated.
         yield_and_wait4wakeup();
     }
-
-    return other->exitcode;
 }
 
 /** @internal */
@@ -403,8 +421,10 @@ static void wakeup_locked(CoroutineHeader* coro)
 #endif
 
     // beware: wakeup() might have been called too soon, before schedule_next() has had a chance to put it on waiting4timer.
+    // e.g. from an irq handler. that actually happens quite often.
     coro->sleepcount--;
     coro->wakeuptime = nil_time;
+    // ll_remove() behaves fine if coro is not actually on waiting4timer (yet), it just does nothing.
     ll_remove(&waiting4timer, &coro->llentry);
 
     // the current coro might not have had a chance yet to call yield_and_wait4wakeup() and is thus still running.
@@ -425,4 +445,24 @@ void wakeup(CoroutineHeader* coro)
     critical_section_exit(&lock);
 
     // never ever call yield() here!
+}
+
+void signal(Waitable* waitable)
+{
+    critical_section_enter_blocking(&lock);
+    waitable->semaphore++;
+    if (waitable->waitchain != NULL)
+    {
+        // FIXME: what happens if the same waitable is signaled twice?
+        //        semaphore count goes up, sure.
+        //        but we'd also wakeup() the waiting coro twice.
+        //        at face value that should be fine.
+        //        but our impl for the runqueue might choke...
+        // FIXME: i suppose the question is: who manages waitchain, signal() or yield_and_wait4other()...
+        wakeup_locked(waitable->waitchain);
+
+        // ...putting this here makes things easy, for now. i think.
+        waitable->waitchain = NULL; // FIXME: do proper chain stuff!
+    }
+    critical_section_exit(&lock);
 }
