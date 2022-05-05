@@ -1,6 +1,7 @@
 #include "coroutine.h"
 #include "pico/stdlib.h"
 #include "pico/critical_section.h"
+#include "hardware/clocks.h"
 #include <string.h>
 
 
@@ -165,12 +166,14 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
         // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
         //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
         // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
-        // FIXME: another thing to check: when waiting for timeout, does wakeup() interrupt that waiting early? the pico-time funcs will retry waiting...
-
 
         // if we dont have a specific time to wake up at then just wait for anything...
         // might be spurious wakeup. in that case just re-check if we have anything to execute right now and if not sleep again.
         __wfe();
+
+        // FIXME: do we need to wait for clocks to run again before continuing? docs dont say.
+        assert((clocks_hw->enabled0 & clocks_hw->wake_en0) == clocks_hw->wake_en0);
+        assert((clocks_hw->enabled1 & clocks_hw->wake_en1) == clocks_hw->wake_en1);
 
         critical_section_enter_blocking(&lock);
 
