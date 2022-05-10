@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "pico/critical_section.h"
 #include "hardware/clocks.h"
+#include "hardware/structs/mpu.h"
 #include <string.h>
 
 
@@ -13,18 +14,18 @@ critical_section_t  lock;
 
 #define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
-
+// only needs the header, no need for stack.
 static CoroutineHeader     mainflow;
 
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
-volatile uint32_t scheduler_stack[512]  __attribute__((aligned(8)));
+volatile uint32_t scheduler_stack[512]  __attribute__((aligned(32)));
 
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
 static_assert(sizeof(mainflow.llentry) == 4);
 // arm docs say that stack pointer should be 8 byte aligned, at a public interface.
 // FIXME ...which is not what this assert here checks. 
-static_assert((offsetof(struct Coroutine<>, stack) % 8) == 0);
+static_assert((offsetof(struct Coroutine<>, stack) % 32) == 0);
 //static_assert(((int32_t) &((Coroutine<>*) 0)->stack[0]) % 8 == 0);
 
 
@@ -35,6 +36,7 @@ static absolute_time_t  soonesttime2wake = at_the_end_of_time;
 static void prime_scheduler_timer_locked();
 static void wakeup_locked(CoroutineHeader* coro);
 static bool is_live(CoroutineHeader* storage, int stacksize);
+static void uninstall_stack_guard(void* stacktop);
 
 
 static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
@@ -108,45 +110,50 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
         struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
         currentcoro->sp = current_sp;
 
-        // debug: hopefully we'll catch mem corruption cases earlier than the hardfault exception
+        // FIXME: i dont like how mainflow, which we only use 1x for init, creeps into every invocation of the scheduler.
         if (currentcoro != &mainflow)
         {
+            // debug: hopefully we'll catch mem corruption cases earlier than the hardfault exception
             assert(is_live(currentcoro, currentcoro->stacksize));
-        }
 
-        bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
-        bool is_sleeping = currentcoro->sleepcount > 0;
+            bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
+            bool is_sleeping = currentcoro->sleepcount > 0;
 
-        // here, this indicates that currentcoro is exiting.
-        if (!is_resched)
-        {
-            assert(!is_sleeping);
-            // mark stack pointer as invalid.
-            // trying to resume this will crash very quickly.
-            // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
-            currentcoro->sp = (uint32_t*) 1;
-
-            // when a coro exits the semaphore count doesnt matter: anyone who waits will be woken up.
-            currentcoro->semaphore = 0x7F;
-            if (currentcoro->waitchain)
+            // here, this indicates that currentcoro is exiting.
+            if (!is_resched)
             {
-                wakeup_locked(currentcoro->waitchain);  // FIXME: do proper chain stuff!
-                currentcoro->waitchain = NULL;
+                assert(!is_sleeping);
+                // mark stack pointer as invalid.
+                // trying to resume this will crash very quickly.
+                // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
+                currentcoro->sp = (uint32_t*) 1;
+
+                // when a coro exits the semaphore count doesnt matter: anyone who waits will be woken up.
+                currentcoro->waitable.semaphore = 0x7F;
+                if (currentcoro->waitable.waitchain)
+                {
+                    wakeup_locked(currentcoro->waitable.waitchain);  // FIXME: do proper chain stuff!
+                    currentcoro->waitable.waitchain = NULL;
+                }
+
+#ifdef PICO_USE_STACK_GUARDS
+                uninstall_stack_guard((void*) &((Coroutine<>*) currentcoro)->stack[0]);
+#endif
             }
+
+            if (is_sleeping)
+            {
+                is_resched = false;
+
+                if (is_at_the_end_of_time(currentcoro->wakeuptime))
+                    ll_push_back(&waiting4timer, &currentcoro->llentry);
+                else
+                    ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
+            }
+
+            if (is_resched)
+                ll_push_back(&ready2run, &currentcoro->llentry);
         }
-
-        if (is_sleeping)
-        {
-            is_resched = false;
-
-            if (is_at_the_end_of_time(currentcoro->wakeuptime))
-                ll_push_back(&waiting4timer, &currentcoro->llentry);
-            else
-                ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
-        }
-
-        if (is_resched)
-            ll_push_back(&ready2run, &currentcoro->llentry);
     } // scoping for var visibility
 
     prime_scheduler_timer_locked();
@@ -261,6 +268,75 @@ static bool is_live(CoroutineHeader* storage, int stacksize)
     return is_below_top && is_above_bottom;
 }
 
+#ifdef PICO_USE_STACK_GUARDS
+static void uninstall_stack_guard(void* stacktop)
+{
+    static const int numregions = 8;
+    const uint32_t   regionaddr = (uint32_t) stacktop & M0PLUS_MPU_RBAR_ADDR_BITS;
+
+    // find the region that we may have configured for that address.
+    for (int i = 0; i < 8; ++i)
+    {
+        mpu_hw->rnr = i;
+        // is region in use?
+        if (mpu_hw->rasr & M0PLUS_MPU_RASR_ENABLE_BITS)
+        {
+            // we only need to match on region address, really.
+            // we specifically do not try to do funny games with multiple subregions.
+            if (regionaddr == (mpu_hw->rbar & M0PLUS_MPU_RBAR_ADDR_BITS))
+            {
+                // disable
+                mpu_hw->rasr = 0;
+                break;
+            }
+        }
+    }
+}
+
+static void install_stack_guard(void* stacktop)
+{
+#ifndef NDEBUG
+    // the pico cpu has 8 mpu regions.
+    const int numregions = (mpu_hw->type & M0PLUS_MPU_TYPE_DREGION_BITS) >> M0PLUS_MPU_TYPE_DREGION_LSB;
+    assert(numregions >= 8);
+#else
+    static const int numregions = 8;
+#endif
+
+    // find us an unused region.
+    // the last region will have been used by the pico-sdk to setup the mainflow stack guard, see pico-sdk/src/rp2_common/pico_runtime/runtime.c
+    for (int i = 0; i < numregions; ++i)
+    {
+        mpu_hw->rnr = i;
+        // region already in use?
+        if (mpu_hw->rasr & M0PLUS_MPU_RASR_ENABLE_BITS)
+            continue;
+
+        // region is free, use it!
+
+        // all our alignment pragma and stuff should have made sure of this.
+        // stack address should be aligned to 32 byte or more.
+        assert(((uint32_t) stacktop & 0x01F) == 0);
+
+        // the region is addressed in chunks of 256 bytes.
+        // NOTE: we make no attempt at trying to minimise region use by squeezing multiple subregions into one.
+        const uint32_t    regionaddr = (uint32_t) stacktop & M0PLUS_MPU_RBAR_ADDR_BITS;
+        // each region has chunks of 32 bytes for which the access permissions can be turned on or off.
+        // find out which 32-byte-chunk the requested address falls into.
+        const uint32_t    subregdisable = 0xFF ^ (1 << (((uint32_t) stacktop >> 5) & 0x07));
+
+        mpu_hw->rbar = regionaddr | 0 | 0;  // set addr but none of the other fields.
+        mpu_hw->rasr = 
+            M0PLUS_MPU_RASR_ENABLE_BITS |       // enable
+            (7 << M0PLUS_MPU_RASR_SIZE_LSB) |   // size of region is 2^(7+1) = 256 bytes, the minimum.
+            (subregdisable << M0PLUS_MPU_RASR_SRD_LSB) |
+            0x10000000;       // attributes: no read/write access at all, and no instruction fetch.
+
+        break;
+    }
+}
+#endif
+
 void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
     if (is_live(storage, stacksize))
@@ -285,6 +361,11 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
             scheduler_stack[i] = 0xdeadbeef;
 #endif
 
+#ifdef PICO_USE_STACK_GUARDS
+        // we basically loose 32 bytes of otherwise usable stack space.
+        install_stack_guard((void*) &scheduler_stack[0]);
+#endif
+
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
         ll_push_back(&ready2run, &mainflow.llentry);
@@ -293,7 +374,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         // run this pseudo coro only once (right now).
         mainflow.flags |= FLAGS_DO_NOT_RESCHEDULE;
         // cannot wait for mainflow to finish running, it'll always outlive any and all coros!
-        mainflow.semaphore = 0x7F;
+        mainflow.waitable.semaphore = 0x7F;
     }
 
     Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
@@ -304,8 +385,8 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         ptrhelper->stack[i] = 0xdeadbeef;
 #endif
 
-    storage->waitchain = NULL;
-    storage->semaphore = 0;
+    storage->waitable.waitchain = NULL;
+    storage->waitable.semaphore = 0;
     storage->flags = 0;
     storage->sleepcount = 0;
     storage->stacksize = stacksize;
@@ -330,6 +411,10 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     *--storage->sp = 0;
 
     critical_section_enter_blocking(&lock);
+#ifdef PICO_USE_STACK_GUARDS
+    // not sure whether we need to do this under lock.
+    install_stack_guard((void*) &ptrhelper->stack[0]);
+#endif
     ll_push_back(&ready2run, &storage->llentry);
     critical_section_exit(&lock);
 
@@ -337,6 +422,9 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
     if (is_first_coro)
     {
+#ifdef PICO_USE_STACK_GUARDS
+        uninstall_stack_guard((void*) &scheduler_stack[0]);
+#endif
         // coroutines don't end up here.
         // but the mainflow does... and we'll need to cleanup.
         critical_section_deinit(&lock);
