@@ -19,6 +19,7 @@ struct CoroutineHeader
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
     absolute_time_t         wakeuptime;
+    uint64_t                timespentexecuting; // in microseconds.
     uint32_t                exitcode;   // there's prob a way that we could recycle the stack to store this, given that the stack is no longer useful (coro exited, remember)
     uint16_t                stacksize;  // ideally we wouldnt need this one.
     uint8_t                 flags;

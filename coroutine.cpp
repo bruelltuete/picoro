@@ -7,10 +7,10 @@
 
 
 // head is currently running.
-struct LinkedList   ready2run;
-struct LinkedList   waiting4timer;
-critical_section_t  lock;
-
+static struct LinkedList    ready2run;
+static struct LinkedList    waiting4timer;
+static critical_section_t   lock;
+static absolute_time_t      headrunningsince;   //< Head of ready2run running since this timestamp, in microseconds. Used to update timespentexecuting.
 
 #define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
@@ -19,7 +19,8 @@ static CoroutineHeader     mainflow;
 
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
-volatile uint32_t scheduler_stack[512]  __attribute__((aligned(32)));
+// FIXME: consider putting this into scratch_y section! (which has 4k space, 2k for mainflow core0 stack, so 2k left for us)
+static volatile uint32_t scheduler_stack[256]  __attribute__((aligned(32)));
 
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
 static_assert(sizeof(mainflow.llentry) == 4);
@@ -109,6 +110,8 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     {
         struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
         currentcoro->sp = current_sp;
+        // FIXME: delayed_by_us() has some maybe unhelpful overflow behaviour.
+        currentcoro->timespentexecuting += absolute_time_diff_us(headrunningsince, get_absolute_time());
 
         // FIXME: i dont like how mainflow, which we only use 1x for init, creeps into every invocation of the scheduler.
         if (currentcoro != &mainflow)
@@ -189,7 +192,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     }
 
     struct CoroutineHeader* upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
-
+    headrunningsince = get_absolute_time();
     critical_section_exit(&lock);
     return upnext->sp;
 }
@@ -366,6 +369,8 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         install_stack_guard((void*) &scheduler_stack[0]);
 #endif
 
+        headrunningsince = get_absolute_time();
+
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
         ll_push_back(&ready2run, &mainflow.llentry);
@@ -389,6 +394,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     storage->waitable.semaphore = 0;
     storage->flags = 0;
     storage->sleepcount = 0;
+    storage->timespentexecuting = 0;
     storage->stacksize = stacksize;
     const int bottom_element = stacksize;
     // points to *past* the last element!
