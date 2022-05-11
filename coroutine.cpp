@@ -142,7 +142,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
                     currentcoro->waitable.waitchain = NULL;
                 }
 
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
                 uninstall_stack_guard((void*) &((Coroutine<>*) currentcoro)->stack[0]);
 #endif
             }
@@ -276,7 +276,7 @@ static bool is_live(CoroutineHeader* storage, int stacksize)
     return is_below_top && is_above_bottom;
 }
 
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
 static void uninstall_stack_guard(void* stacktop)
 {
     static const int numregions = 8;
@@ -343,7 +343,7 @@ static void install_stack_guard(void* stacktop)
         break;
     }
 }
-#endif
+#endif // if PICO_USE_STACK_GUARDS
 
 void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
@@ -369,7 +369,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
             scheduler_stack[i] = 0xdeadbeef;
 #endif
 
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
         // we basically loose 32 bytes of otherwise usable stack space.
         install_stack_guard((void*) &scheduler_stack[0]);
 #endif
@@ -426,7 +426,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     *--storage->sp = 0;
 
     critical_section_enter_blocking(&lock);
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
     // not sure whether we need to do this under lock.
     install_stack_guard((void*) &ptrhelper->stack[0]);
 #endif
@@ -437,7 +437,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
     if (is_first_coro)
     {
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
         uninstall_stack_guard((void*) &scheduler_stack[0]);
 #endif
         // coroutines don't end up here.

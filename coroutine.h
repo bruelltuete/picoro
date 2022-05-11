@@ -48,7 +48,7 @@ struct Coroutine : CoroutineHeader
     // BEWARE: the time/timer/sleep functions in the pico-sdk need a lot of stack! 150*4=600 bytes or more!
     volatile uint32_t       stack[StackSize]  __attribute__((aligned(32)));
 
-#ifdef PICO_USE_STACK_GUARDS
+#if PICO_USE_STACK_GUARDS
     // if we have stack guards then we loose 32 bytes of stack space (the guard area).
     static_assert(StackSize >= 64 + (32 / 4));
 #else
