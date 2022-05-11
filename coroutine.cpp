@@ -10,7 +10,9 @@
 static struct LinkedList    ready2run;
 static struct LinkedList    waiting4timer;
 static critical_section_t   lock;
+#if PICORO_TRACK_EXECUTION_TIME
 static absolute_time_t      headrunningsince;   //< Head of ready2run running since this timestamp, in microseconds. Used to update timespentexecuting.
+#endif
 
 #define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
@@ -110,8 +112,9 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     {
         struct CoroutineHeader* currentcoro = LL_ACCESS(currentcoro, llentry, ll_pop_front(&ready2run));
         currentcoro->sp = current_sp;
-        // FIXME: delayed_by_us() has some maybe unhelpful overflow behaviour.
+#if PICORO_TRACK_EXECUTION_TIME
         currentcoro->timespentexecuting += absolute_time_diff_us(headrunningsince, get_absolute_time());
+#endif
 
         // FIXME: i dont like how mainflow, which we only use 1x for init, creeps into every invocation of the scheduler.
         if (currentcoro != &mainflow)
@@ -192,7 +195,9 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     }
 
     struct CoroutineHeader* upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
+#if PICORO_TRACK_EXECUTION_TIME
     headrunningsince = get_absolute_time();
+#endif
     critical_section_exit(&lock);
     return upnext->sp;
 }
@@ -369,7 +374,9 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         install_stack_guard((void*) &scheduler_stack[0]);
 #endif
 
+#if PICORO_TRACK_EXECUTION_TIME
         headrunningsince = get_absolute_time();
+#endif
 
         // i need mainflow in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
@@ -394,7 +401,9 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
     storage->waitable.semaphore = 0;
     storage->flags = 0;
     storage->sleepcount = 0;
+#if PICORO_TRACK_EXECUTION_TIME
     storage->timespentexecuting = 0;
+#endif
     storage->stacksize = stacksize;
     const int bottom_element = stacksize;
     // points to *past* the last element!

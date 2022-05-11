@@ -2,6 +2,12 @@
 #include "linkedlist.h"
 #include "pico/stdlib.h"
 
+// if defined then we keep track of how much cpu time each coro gets.
+// this is basically debugging or profiling. no other use really. so you can switch it off.
+#ifndef PICORO_TRACK_EXECUTION_TIME
+#define PICORO_TRACK_EXECUTION_TIME     0
+#endif
+
 
 // forward decl
 struct CoroutineHeader;
@@ -19,7 +25,9 @@ struct CoroutineHeader
     volatile uint32_t*      sp;
     struct LinkedListEntry  llentry;
     absolute_time_t         wakeuptime;
+#if PICORO_TRACK_EXECUTION_TIME
     uint64_t                timespentexecuting; // in microseconds.
+#endif
     uint32_t                exitcode;   // there's prob a way that we could recycle the stack to store this, given that the stack is no longer useful (coro exited, remember)
     uint16_t                stacksize;  // ideally we wouldnt need this one.
     uint8_t                 flags;
