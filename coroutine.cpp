@@ -89,6 +89,8 @@ static void prime_scheduler_timer_locked()
                     // BUT: the head of ready2run may currently be executing! and we've been called from a timer irq.
                     // cannot just swap out the currently running task! that'd be preemptive multitasking. we are doing cooperative multitasking.
                     ll_push_back(&ready2run, &waiting4timeoutcoro->llentry);
+                    // the equivalent of wakeup(). someone put the coro on the wait queue and inc'd sleepcount. if we take it off we need to dec!
+                    waiting4timeoutcoro->sleepcount--;
                     // need to set up a timer for the coro waiting next up!
                     soonesttime2wake = at_the_end_of_time;
                     continue;
@@ -128,7 +130,9 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
             // here, this indicates that currentcoro is exiting.
             if (!is_resched)
             {
+                // this assert can fail if we have a mismatched wait4time and wake.
                 assert(!is_sleeping);
+
                 // mark stack pointer as invalid.
                 // trying to resume this will crash very quickly.
                 // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
@@ -195,6 +199,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     }
 
     struct CoroutineHeader* upnext = LL_ACCESS(upnext, llentry, ll_peek_head(&ready2run));
+    assert(upnext->sleepcount <= 0);
 #if PICORO_TRACK_EXECUTION_TIME
     headrunningsince = get_absolute_time();
 #endif
