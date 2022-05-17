@@ -35,6 +35,13 @@ struct CoroutineHeader
 
     // if PICO_USE_STACK_GUARDS is defined then 32 bytes of the stack are used as a guard area.
     // as opposed to protecting these header fields here.
+
+    CoroutineHeader()
+        : sp(0)
+    {
+    }
+    CoroutineHeader(const CoroutineHeader& copy) = delete;
+    CoroutineHeader& operator=(const CoroutineHeader& assign) = delete;
 };
 
 template <int StackSize_ = 256>
