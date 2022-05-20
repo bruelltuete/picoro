@@ -17,6 +17,13 @@ struct Waitable
     CoroutineHeader*    waitchain;
     // FIXME: i'm not sure i want a counting semaphore...
     int8_t              semaphore;      // >0 means signalled.
+
+    Waitable()
+        : waitchain(0), semaphore(0)
+    {
+    }
+    Waitable(const Waitable& copy) = delete;
+    Waitable& operator=(const Waitable& assign) = delete;
 };
 
 struct CoroutineHeader
