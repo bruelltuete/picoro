@@ -48,6 +48,14 @@ static inline int rb_peek_front(RingBuffer* rb)
     return rb->begin;
 }
 
+static inline int rb_peek_back(RingBuffer* rb)
+{
+    // it's a mistake to call peek_back if ringbuffer is empty.
+    assert(!rb_is_empty(rb));
+
+    return (rb->end + RINGBUFFER_SIZE - 1) % RINGBUFFER_SIZE;
+}
+
 static inline void rb_pop_front(RingBuffer* rb)
 {
     assert(!rb_is_empty(rb));
@@ -77,6 +85,7 @@ static inline void rb_unit_test()
         int k = rb_push_back(&rb);
         assert(k == i);
         assert(!rb_is_empty(&rb));
+        assert(rb_peek_back(&rb) == k);
     }
     assert(rb_is_full(&rb));
 
