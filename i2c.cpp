@@ -35,7 +35,10 @@ static struct DriverState
     volatile bool       datawritecaused;
     volatile bool       drivershouldexit;
 
-    DriverState() : dmareadchannel(-1) {}
+    DriverState()
+        : dmareadchannel(-1)
+    {
+    }
 }           driverstate[2];
 
 
