@@ -7,6 +7,8 @@
 #define RINGBUFFER_SIZE 4
 #include "ringbuffer.h"
 
+static i2c_inst_t* i2cinst_from_index(int index);
+
 
 static const int        dmairq[2] = {1, 1};
 
@@ -17,6 +19,7 @@ struct CmdRingbufferEntry
     int                 numresults;
     uint8_t*            results;
     Waitable            waitable;
+    bool*               success;
     int8_t              address;
 };
 
@@ -31,9 +34,12 @@ static struct DriverState
 
     CmdRingbufferEntry  cmdringbuffer[RINGBUFFER_SIZE];
 
+    bool*               wasaborted;     // FIXME: should this be volatile? not sure... dont think so?
     volatile bool       datareadcaused;
     volatile bool       datawritecaused;
-    volatile bool       drivershouldexit;
+    volatile bool       haswokenup;
+
+    bool                drivershouldexit;
 
     DriverState()
         : dmareadchannel(-1)
@@ -43,15 +49,41 @@ static struct DriverState
 
 
 template <int I>
-static void dma_irq_handler()
+static void i2chandler()
 {
     uint ex = __get_current_exception();
-    assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
+    assert((ex - 16) == (I2C0_IRQ + I));
 
-    // FIXME: workaround for bug in pico-sdk. cannot remove and re-add a shared handler
-    //        so we leave ours here dangling and deal with that fact.
-    if (driverstate[I].dmareadchannel == -1)
-        return;
+    i2c_inst_t* i2c = i2cinst_from_index(I);
+    uint32_t intstatus = i2c_get_hw(i2c)->intr_stat;
+
+    if (intstatus & I2C_IC_INTR_STAT_R_TX_ABRT_BITS)
+    {
+        // need to read to clear the irq (it always reads as zero, nothing useful to do with the result).
+        i2c_get_hw(i2c)->clr_tx_abrt;
+
+        *driverstate[I].wasaborted = true;
+
+        // not sure which one tbh... lets cancel both.
+        // FIXME: check transfer_count before cancelling!
+        dma_channel_abort(driverstate[I].dmareadchannel);
+        dma_channel_abort(driverstate[I].dmawritechannel);
+
+        if (!driverstate[I].haswokenup) // FIXME: this is not atomic!
+        {
+            driverstate[I].haswokenup = true;
+            wakeup(&driverstate[I].i2cdriverblock);
+        }
+    }
+}
+
+template <int I>
+static void dma_irq_handler()
+{
+    // FIXME: now that we have a 2nd irq handler, i think we need some locking to make this air tight.
+
+    uint ex = __get_current_exception();
+    assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
 
     bool r = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmareadchannel);
     bool w = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmawritechannel);
@@ -65,7 +97,12 @@ static void dma_irq_handler()
 
     if (driverstate[I].datawritecaused && driverstate[I].datareadcaused)
     {
-        wakeup(&driverstate[I].i2cdriverblock);
+        if (!driverstate[I].haswokenup) // FIXME: this is not atomic!
+        {
+            driverstate[I].haswokenup = true;
+            wakeup(&driverstate[I].i2cdriverblock);
+        }
+
         // reset ack flags "after" handling. so that we trigger this only once!
         driverstate[I].datareadcaused = false;
         driverstate[I].datawritecaused = false;
@@ -79,13 +116,14 @@ static void deinit(int i2cindex)
     // should only be called once all queued up cmds have been drained.
     assert(rb_is_empty(&driverstate[i2cindex].cmdindices));
 
+    // we do have exclusive use of the i2c irq.
+    int i2cirq = i2cindex + I2C0_IRQ;
+    irq_set_enabled(i2cirq, false);
+    irq_remove_handler(i2cirq, (i2cindex == 0) ? i2chandler<0> : i2chandler<1>);
+
     dma_irqn_set_channel_enabled(dmairq[i2cindex], driverstate[i2cindex].dmareadchannel, false);
     dma_irqn_set_channel_enabled(dmairq[i2cindex], driverstate[i2cindex].dmawritechannel, false);
-    
-    // FIXME: pico-sdk has a bug in add/remove shared handler.
-    //        so we'll never remove our handlers here and make sure to add them only once in init().
-    //        and also the handler can deal with being called when it should have been registered.
-    //irq_remove_handler(DMA_IRQ_0 + dmairq[i2cindex], dmahandlers[i2cindex]);
+    irq_remove_handler(DMA_IRQ_0 + dmairq[i2cindex], dmahandlers[i2cindex]);
 
     dma_channel_unclaim(driverstate[i2cindex].dmareadchannel);
     driverstate[i2cindex].dmareadchannel = -1;
@@ -113,9 +151,17 @@ static uint32_t i2cdriver_func(uint32_t param)
             // but reads are optional. so if there are no reads then we pretend the read dma has finished already.
             driverstate[i2cindex].datareadcaused = c.numresults == 0;
 
-            i2c->hw->enable = 0;
-            i2c->hw->tar = c.address;
-            i2c->hw->enable = 1;
+            bool    wasaborted = false;
+            driverstate[i2cindex].wasaborted = &wasaborted;
+            driverstate[i2cindex].haswokenup = false;
+
+            i2c_get_hw(i2c)->enable = 0;
+            i2c_get_hw(i2c)->tar = c.address;
+            i2c_get_hw(i2c)->intr_mask = I2C_IC_INTR_MASK_M_TX_ABRT_BITS;
+            i2c_get_hw(i2c)->enable = 1;
+
+            const int i2cirq = i2c_hw_index(i2c) + I2C0_IRQ;
+            irq_set_enabled(i2cirq, true);
 
             if (c.numresults > 0)
             {
@@ -130,6 +176,11 @@ static uint32_t i2cdriver_func(uint32_t param)
             dma_channel_start(driverstate[i2cindex].dmawritechannel);
 
             yield_and_wait4wakeup();
+
+            irq_set_enabled(i2cirq, false);
+
+            if (c.success != NULL)
+                *c.success = !wasaborted;
 
 #ifndef NDEBUG
             c.numcmds = 0;
@@ -215,20 +266,17 @@ static void init(int i2cindex)
         dma_irqn_set_channel_enabled(dmairq[i2cindex], driverstate[i2cindex].dmareadchannel, true);
     }
 
-    // FIXME: workaround for bug in pico-sdk. remove and re-adding a shared handler does not work.
-    //        so make sure we add our dma handler only once and never remove it again.
-    static bool alreadyadded[2] = {false, false};
-    if (!alreadyadded[i2cindex])
-    {
-        irq_add_shared_handler(DMA_IRQ_0 + dmairq[i2cindex], dmahandlers[i2cindex], PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-        alreadyadded[i2cindex] = true;
-    }
+    irq_add_shared_handler(DMA_IRQ_0 + dmairq[i2cindex], dmahandlers[i2cindex], PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
     irq_set_enabled(DMA_IRQ_0 + dmairq[i2cindex], true);
+
+    // we don't have exclusive use of the dma(irq), but we do have exclusive use of the i2c controller!
+    int i2cirq = i2c_hw_index(i2c) + I2C0_IRQ;
+    irq_set_exclusive_handler(i2cirq, (i2cindex == 0) ? i2chandler<0> : i2chandler<1>);
 
     yield_and_start(i2cdriver_func, (uint32_t) i2c, &driverstate[i2cindex].i2cdriverblock);
 }
 
-Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmds, int numresults, uint8_t* results)
+Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmds, int numresults, uint8_t* results, bool* success)
 {
     assert(numcmds > 0);
     // each read needs a read-command!
@@ -251,6 +299,7 @@ Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmd
     c.numresults = numresults;
     c.results = results;
     c.address = address;
+    c.success = success;
 
     // tell driver that there are new cmds waiting.
     signal(&driverstate[i2cindex].newcmdswaitable);
