@@ -2,6 +2,7 @@
 #include "hardware/i2c.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include <string.h>
 #include "coroutine.h"
 #define RINGBUFFER_SIZE 4
@@ -51,6 +52,8 @@ static struct DriverState
 template <int I>
 static void i2chandler()
 {
+    uint32_t save = save_and_disable_interrupts();
+
     uint ex = __get_current_exception();
     assert((ex - 16) == (I2C0_IRQ + I));
 
@@ -65,22 +68,37 @@ static void i2chandler()
         *driverstate[I].wasaborted = true;
 
         // not sure which one tbh... lets cancel both.
-        // FIXME: check transfer_count before cancelling!
+        // note: right now we dont care how much of the request was completed, e.g. 50% was sent, don't care. if we did we'd have to check transfer_count before cancelling!
         dma_channel_abort(driverstate[I].dmareadchannel);
         dma_channel_abort(driverstate[I].dmawritechannel);
 
-        if (!driverstate[I].haswokenup) // FIXME: this is not atomic!
+        if (!driverstate[I].haswokenup)
         {
             driverstate[I].haswokenup = true;
             wakeup(&driverstate[I].i2cdriverblock);
         }
     }
+    else    // notice the else here! abort condition wins over tx-empty!
+    if (intstatus & I2C_IC_INTR_MASK_M_TX_EMPTY_BITS)
+    {
+        i2c_get_hw(i2c)->intr_mask &= ~I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
+
+        // i2c controller has successfully pushed out all the bits.
+        // now we are really done with the transfer.
+        if (!driverstate[I].haswokenup)
+        {
+            driverstate[I].haswokenup = true;
+            wakeup(&driverstate[I].i2cdriverblock);
+        }
+    }
+
+    restore_interrupts(save);
 }
 
 template <int I>
 static void dma_irq_handler()
 {
-    // FIXME: now that we have a 2nd irq handler, i think we need some locking to make this air tight.
+    uint32_t save = save_and_disable_interrupts();
 
     uint ex = __get_current_exception();
     assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
@@ -97,16 +115,17 @@ static void dma_irq_handler()
 
     if (driverstate[I].datawritecaused && driverstate[I].datareadcaused)
     {
-        if (!driverstate[I].haswokenup) // FIXME: this is not atomic!
-        {
-            driverstate[I].haswokenup = true;
-            wakeup(&driverstate[I].i2cdriverblock);
-        }
+        // we really should wait for the i2c controller to push out all the bits, before claiming it's finished.
+        // otherwise dma will just fill the tx fifo and claim it's done too soon. (which gets us all sorts of weird problems)
+        i2c_inst_t* i2c = i2cinst_from_index(I);
+        i2c_get_hw(i2c)->intr_mask |= I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
 
         // reset ack flags "after" handling. so that we trigger this only once!
         driverstate[I].datareadcaused = false;
         driverstate[I].datawritecaused = false;
     }
+
+    restore_interrupts(save);
 }
 
 static const irq_handler_t dmahandlers[] = {dma_irq_handler<0>, dma_irq_handler<1>};
@@ -140,8 +159,8 @@ static uint32_t i2cdriver_func(uint32_t param)
     {
         if (!rb_is_empty(&driverstate[i2cindex].cmdindices))
         {
-            // FIXME: previous dma might still be in progress!
-            //        actually, it shouldnt... but might be worth asserting on.
+            // tx fifo should be empty! we make sure of that after each transfer.
+            assert(i2c_get_hw(i2c)->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS);
 
             // not empty, so do the thing.
             CmdRingbufferEntry&  c = driverstate[i2cindex].cmdringbuffer[rb_peek_front(&driverstate[i2cindex].cmdindices)];
@@ -176,6 +195,8 @@ static uint32_t i2cdriver_func(uint32_t param)
             dma_channel_start(driverstate[i2cindex].dmawritechannel);
 
             yield_and_wait4wakeup();
+            // we should only ever get here until after all the bits in the tx fifo have been sent out!
+            assert(i2c_get_hw(i2c)->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS);
 
             irq_set_enabled(i2cirq, false);
 
