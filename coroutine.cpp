@@ -3,6 +3,8 @@
 #include "pico/critical_section.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/mpu.h"
+#include "hardware/regs/syscfg.h"
+#include "hardware/structs/syscfg.h"
 #include <string.h>
 
 
@@ -18,6 +20,8 @@ static absolute_time_t      headrunningsince;   //< Head of ready2run running si
 
 // only needs the header, no need for stack.
 static CoroutineHeader     mainflow;
+
+static bool isdebuggerattached = false;     //< False if we think it's unlikely that a debugger is attached. True if we are pretty sure there is one.
 
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
@@ -180,6 +184,8 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 
         critical_section_exit(&lock);
 
+        check_debugger_attached();
+
         // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
         //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
         // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
@@ -204,6 +210,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     headrunningsince = get_absolute_time();
 #endif
     critical_section_exit(&lock);
+    check_debugger_attached();
     return upnext->sp;
 }
 
@@ -576,4 +583,19 @@ void signal(Waitable* waitable)
         waitable->waitchain = NULL; // FIXME: do proper chain stuff!
     }
     critical_section_exit(&lock);
+}
+
+bool check_debugger_attached()
+{
+    if (isdebuggerattached)
+        return true;
+
+    // we don't get direct access to the swd pins but we can observe what the debug core responds!
+    // so when there's a debugger attached it's likely that the cpu responds something and we can see this bit change value over time.
+    static const int initialswd = syscfg_hw->dbgforce & SYSCFG_DBGFORCE_PROC0_SWDO_BITS;
+    int swd = syscfg_hw->dbgforce & SYSCFG_DBGFORCE_PROC0_SWDO_BITS;
+    if (swd != initialswd)
+        isdebuggerattached = true;
+
+    return isdebuggerattached;
 }

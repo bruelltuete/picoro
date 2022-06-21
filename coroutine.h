@@ -129,3 +129,6 @@ extern void signal(Waitable* waitable);
 
 // FIXME: considered but prob a bad idea. too much caller specific application logic needs to happen in the right order to not loose an irq.
 //extern void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready);
+
+
+extern bool check_debugger_attached();
