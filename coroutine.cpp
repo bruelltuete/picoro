@@ -377,7 +377,7 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
         soonestalarmid = 0;
 
 #ifndef NDEBUG
-        for (int i = 0; i < sizeof(scheduler_stack) / sizeof(scheduler_stack[i]); ++i)
+        for (unsigned int i = 0; i < sizeof(scheduler_stack) / sizeof(scheduler_stack[i]); ++i)
             scheduler_stack[i] = 0xdeadbeef;
 #endif
 
