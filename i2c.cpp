@@ -11,7 +11,7 @@
 static i2c_inst_t* i2cinst_from_index(int index);
 
 
-static const int        dmairq[2] = {1, 1};
+static const unsigned int        dmairq[2] = {1, 1};
 
 struct CmdRingbufferEntry
 {
