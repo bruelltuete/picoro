@@ -5,6 +5,7 @@
 #include "hardware/sync.h"
 #include <string.h>
 #include "coroutine.h"
+#include "profiler.h"
 #define RINGBUFFER_SIZE 4
 #include "ringbuffer.h"
 
@@ -52,6 +53,8 @@ static struct DriverState
 template <int I>
 static void i2chandler()
 {
+    PROFILE_THIS_FUNC;
+
     uint32_t save = save_and_disable_interrupts();
 
     uint ex = __get_current_exception();
@@ -98,6 +101,8 @@ static void i2chandler()
 template <int I>
 static void dma_irq_handler()
 {
+    PROFILE_THIS_FUNC;
+
     uint32_t save = save_and_disable_interrupts();
 
     uint ex = __get_current_exception();
@@ -132,6 +137,8 @@ static const irq_handler_t dmahandlers[] = {dma_irq_handler<0>, dma_irq_handler<
 
 static void deinit(int i2cindex)
 {
+    PROFILE_THIS_FUNC;
+
     // should only be called once all queued up cmds have been drained.
     assert(rb_is_empty(&driverstate[i2cindex].cmdindices));
 
@@ -152,6 +159,8 @@ static void deinit(int i2cindex)
 
 static uint32_t i2cdriver_func(uint32_t param)
 {
+    PROFILE_THIS_FUNC;
+
     i2c_inst_t* i2c = (i2c_inst_t*) param;
     int         i2cindex = i2c_hw_index(i2c);
 
@@ -246,6 +255,8 @@ static i2c_inst_t* i2cinst_from_index(int index)
 
 static void init(int i2cindex)
 {
+    PROFILE_THIS_FUNC;
+
     if (driverstate[i2cindex].dmareadchannel != -1)
         return;
 
@@ -299,6 +310,8 @@ static void init(int i2cindex)
 
 Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmds, int numresults, uint8_t* results, bool* success)
 {
+    PROFILE_THIS_FUNC;
+
     assert(numcmds > 0);
     // each read needs a read-command!
     assert(numcmds >= numresults);
@@ -330,6 +343,8 @@ Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmd
 
 const CoroutineHeader* get_driver_coro(i2c_inst_t* i2c)
 {
+    PROFILE_THIS_FUNC;
+
     const int i2cindex = i2c_hw_index(i2c);
 
     if (driverstate[i2cindex].dmareadchannel == -1)
@@ -340,6 +355,8 @@ const CoroutineHeader* get_driver_coro(i2c_inst_t* i2c)
 
 void stop_i2c_driver_async()
 {
+    PROFILE_THIS_FUNC;
+
     if (driverstate[0].dmareadchannel != -1)
     {
         driverstate[0].drivershouldexit = true;

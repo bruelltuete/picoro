@@ -1,4 +1,5 @@
 #include "coroutine.h"
+#include "profiler.h"
 #include "pico/stdlib.h"
 #include "pico/critical_section.h"
 #include "hardware/clocks.h"
@@ -48,6 +49,8 @@ static void uninstall_stack_guard(void* stacktop);
 
 static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 {
+    PROFILE_THIS_FUNC;
+
     assert(coro != NULL);
 
     critical_section_enter_blocking(&lock);
@@ -72,6 +75,8 @@ static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 // assumes it gets called with lock held (or an equivalent of that).
 static void prime_scheduler_timer_locked()
 {
+    PROFILE_THIS_FUNC;
+
     while (true)
     {
         CoroutineHeader* waiting4timeoutcoro = LL_ACCESS(waiting4timeoutcoro, llentry, ll_peek_head(&waiting4timer));
@@ -109,6 +114,8 @@ static void prime_scheduler_timer_locked()
 // the extern-C is here because i want an unmangled name that's easy to be called from yield()'s asm section.
 extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
 {
+    PROFILE_THIS_FUNC;
+
     critical_section_enter_blocking(&lock);
 
     // there should always be at least the currently running coro in ready2run.
@@ -252,21 +259,26 @@ void __attribute__ ((naked)) yield1(volatile uint32_t* schedsp)
     );
 
     // will not get here
-    while (true)
-        __breakpoint();
+    __breakpoint();
 }
 
 void yield()
 {
+    PROFILE_THIS_FUNC;
+
     // ugh, the asm syntax is beyond me... by calling another func we are at least (guaranteed?) to get this value in r0.
     // at least thats what the calling convention says.
     volatile uint32_t* schedsp = &scheduler_stack[sizeof(scheduler_stack) / sizeof(scheduler_stack[0])];
     yield1(schedsp);
+
+    return;
 }
 
 // One extra step for calling coro's entry point to make sure there's a yield_and_exit() when it returns.
 static void entry_point_wrapper(coroutinefp_t func, int param)
 {
+    PROFILE_THIS_FUNC;
+
     uint32_t rv = func(param);
 
     // will never return here!
@@ -279,6 +291,8 @@ static void entry_point_wrapper(coroutinefp_t func, int param)
 
 static bool is_live(CoroutineHeader* storage, int stacksize)
 {
+    PROFILE_THIS_FUNC;
+
     Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
 
     // stack pointer should point to somewhere within the stack.
@@ -291,6 +305,8 @@ static bool is_live(CoroutineHeader* storage, int stacksize)
 #if PICO_USE_STACK_GUARDS
 static void uninstall_stack_guard(void* stacktop)
 {
+    PROFILE_THIS_FUNC;
+
     static const int numregions = 8;
     const uint32_t   regionaddr = (uint32_t) stacktop & M0PLUS_MPU_RBAR_ADDR_BITS;
 
@@ -315,6 +331,8 @@ static void uninstall_stack_guard(void* stacktop)
 
 static void install_stack_guard(void* stacktop)
 {
+    PROFILE_THIS_FUNC;
+
 #ifndef NDEBUG
     // the pico cpu has 8 mpu regions.
     const int numregions = (mpu_hw->type & M0PLUS_MPU_TYPE_DREGION_BITS) >> M0PLUS_MPU_TYPE_DREGION_LSB;
@@ -359,6 +377,8 @@ static void install_stack_guard(void* stacktop)
 
 void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
 {
+    PROFILE_THIS_FUNC;
+
     if (is_live(storage, stacksize))
     {
         yield();
@@ -460,6 +480,8 @@ void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage,
 
 void yield_and_exit(uint32_t exitcode)
 {
+    PROFILE_THIS_FUNC;
+
     critical_section_enter_blocking(&lock);
     {
         struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
@@ -473,6 +495,8 @@ void yield_and_exit(uint32_t exitcode)
 
 void yield_and_wait4time(absolute_time_t until)
 {
+    PROFILE_THIS_FUNC;
+
     critical_section_enter_blocking(&lock);
     {
         struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
@@ -486,11 +510,15 @@ void yield_and_wait4time(absolute_time_t until)
 
 void yield_and_wait4wakeup()
 {
+    PROFILE_THIS_FUNC;
+
     yield_and_wait4time(at_the_end_of_time);
 }
 
 void yield_and_wait4signal(Waitable* other)
 {
+    PROFILE_THIS_FUNC;
+
 #ifndef NDEBUG  // for debugging
     struct CoroutineHeader* oldself = 0;
     critical_section_enter_blocking(&lock);
@@ -533,6 +561,8 @@ void yield_and_wait4signal(Waitable* other)
 /** @internal */
 static void wakeup_locked(CoroutineHeader* coro)
 {
+    PROFILE_THIS_FUNC;
+
 #ifndef NDEBUG  // for debugging
     // may not be true? with old stray timer alarms.
     assert(is_live(coro, coro->stacksize));
@@ -556,6 +586,8 @@ static void wakeup_locked(CoroutineHeader* coro)
 
 void wakeup(CoroutineHeader* coro)
 {
+    PROFILE_THIS_FUNC;
+
     // likely to be called from interrupt/exception handler!
 
     critical_section_enter_blocking(&lock);
@@ -567,6 +599,8 @@ void wakeup(CoroutineHeader* coro)
 
 void signal(Waitable* waitable)
 {
+    PROFILE_THIS_FUNC;
+
     critical_section_enter_blocking(&lock);
     waitable->semaphore++;
     if (waitable->waitchain != NULL)
@@ -587,6 +621,8 @@ void signal(Waitable* waitable)
 
 bool check_debugger_attached()
 {
+    PROFILE_THIS_FUNC;
+
     if (isdebuggerattached)
         return true;
 
