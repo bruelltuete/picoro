@@ -295,7 +295,7 @@ static void uninstall_stack_guard(void* stacktop)
     const uint32_t   regionaddr = (uint32_t) stacktop & M0PLUS_MPU_RBAR_ADDR_BITS;
 
     // find the region that we may have configured for that address.
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < numregions; ++i)
     {
         mpu_hw->rnr = i;
         // is region in use?
