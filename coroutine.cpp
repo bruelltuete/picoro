@@ -110,6 +110,23 @@ static void prime_scheduler_timer_locked()
     }
 }
 
+static void idle_lightsleep()
+{
+    PROFILE_THIS_FUNC;
+
+    // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
+    //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
+    // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
+
+    // if we dont have a specific time to wake up at then just wait for anything...
+    // might be spurious wakeup. in that case just re-check if we have anything to execute right now and if not sleep again.
+    __wfe();
+
+    // FIXME: do we need to wait for clocks to run again before continuing? docs dont say.
+    assert((clocks_hw->enabled0 & clocks_hw->wake_en0) == clocks_hw->wake_en0);
+    assert((clocks_hw->enabled1 & clocks_hw->wake_en1) == clocks_hw->wake_en1);
+}
+
 // returns stack pointer for next coro
 // the extern-C is here because i want an unmangled name that's easy to be called from yield()'s asm section.
 extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
@@ -192,18 +209,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
         critical_section_exit(&lock);
 
         check_debugger_attached();
-
-        // FIXME: wfe vs wfi? pico-sdk uses mostly wfe and sev for timer/alarm stuff.
-        //        fwiw, using wfi here will block indefinitely most of the time. i wonder why though, the timer alarm is an irq.
-        // FIXME: need to test whether wakeup works... up to now, the interrupt handler was called too quickly
-
-        // if we dont have a specific time to wake up at then just wait for anything...
-        // might be spurious wakeup. in that case just re-check if we have anything to execute right now and if not sleep again.
-        __wfe();
-
-        // FIXME: do we need to wait for clocks to run again before continuing? docs dont say.
-        assert((clocks_hw->enabled0 & clocks_hw->wake_en0) == clocks_hw->wake_en0);
-        assert((clocks_hw->enabled1 & clocks_hw->wake_en1) == clocks_hw->wake_en1);
+        idle_lightsleep();
 
         critical_section_enter_blocking(&lock);
 
