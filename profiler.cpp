@@ -14,6 +14,10 @@ volatile FuncProfile*   currentfunction = 0;
 static LinkedList       funclist;
 static unsigned int     unaccountedsamples = 0;
 
+// forward decl
+void start_sampler();
+
+
 static struct InitHelper
 {
     InitHelper()
@@ -57,7 +61,7 @@ void start_sampler()
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
     timer_hw->alarm[ALARM_NUM] = timer_hw->timelr + SAMPLE_INTERVAL;
 
-    // FIXME: nmi
+    // FIXME: nmi?
 }
 
 void stop_and_dump_profile()

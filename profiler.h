@@ -8,12 +8,14 @@
 
 #if PICORO_ENABLE_PROFILER
 
+// forward decl
 struct FuncProfile;
 
 extern volatile FuncProfile*    currentfunction;
 
-extern void start_sampler();
+/** Helper function called by PROFILE_THIS_FUNC. */
 extern void linkup_func(FuncProfile* func);
+/** Call this to print out the profile to stdout/console. */
 extern void stop_and_dump_profile();
 
 
@@ -48,9 +50,24 @@ struct ProfileStackframeHelper
     }
 };
 
+/**
+ * Put PROFILE_THIS_FUNC at the top of your function.
+ * Looks like:
+ * \code
+ * void funcA() {
+ *      PROFILE_THIS_FUNC;
+ *      do_stuff();
+ * }
+ * void funcB() {
+ *      PROFILE_THIS_FUNC;
+ *      funcA();
+ *      do_other_stuff();
+ * }
+ * \endcode
+ */
 #define PROFILE_THIS_FUNC \
-    static FuncProfile          __CONCAT(profile, __LINE__)(__PRETTY_FUNCTION__); \
-    ProfileStackframeHelper     __CONCAT(psh, __LINE__)(&__CONCAT(profile, __LINE__));
+    static FuncProfile              __CONCAT(profile, __LINE__)(__PRETTY_FUNCTION__); \
+    const ProfileStackframeHelper   __CONCAT(psh, __LINE__)(&__CONCAT(profile, __LINE__))
 
 
 #else
