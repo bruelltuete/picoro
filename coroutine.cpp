@@ -258,7 +258,7 @@ void __attribute__ ((naked)) yield1(volatile uint32_t* schedsp)
         : "memory"  // clobber: make sure compiler has generated stores before and loads after this block.
     );
 
-    // will not get here
+    // will not get here.
     __breakpoint();
 }
 
@@ -285,8 +285,7 @@ static void entry_point_wrapper(coroutinefp_t func, int param)
     yield_and_exit(rv);
 
     // but if we do by accident somehow...
-    while (true)
-        __breakpoint();
+    __breakpoint();
 }
 
 static bool is_live(CoroutineHeader* storage, int stacksize)
