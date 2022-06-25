@@ -63,38 +63,46 @@ static inline void rb_pop_front(RingBuffer* rb)
 }
 
 
+#if !PICO_PRINTF_ALWAYS_INCLUDED
+// if the above symbol is not defined then assert's printf does not work!
+#endif
+// copied from assert macro.
+#define CHECK(__e) ((__e) ? (void)0 : __assert_func(__FILE__, __LINE__, __PRETTY_FUNCTION__, #__e))
+
 static inline void rb_unit_test()
 {
     RingBuffer  rb;
     rb_init_ringbuffer(&rb);
-    assert(rb_is_empty(&rb));
-    assert(!rb_is_full(&rb));
+    CHECK(rb_is_empty(&rb));
+    CHECK(!rb_is_full(&rb));
 
     int i0 = rb_push_back(&rb);
-    assert(!rb_is_empty(&rb));
-    assert(!rb_is_full(&rb));
+    CHECK(!rb_is_empty(&rb));
+    CHECK(!rb_is_full(&rb));
 
-    assert(rb_peek_front(&rb) == i0);
+    CHECK(rb_peek_front(&rb) == i0);
 
     rb_pop_front(&rb);
-    assert(rb_is_empty(&rb));
+    CHECK(rb_is_empty(&rb));
 
     // rb can store size-1 elements
     for (int i = 1; i < RINGBUFFER_SIZE; ++i)
     {
         int k = rb_push_back(&rb);
-        assert(k == i);
-        assert(!rb_is_empty(&rb));
-        assert(rb_peek_back(&rb) == k);
+        CHECK(k == i);
+        CHECK(!rb_is_empty(&rb));
+        CHECK(rb_peek_back(&rb) == k);
     }
-    assert(rb_is_full(&rb));
+    CHECK(rb_is_full(&rb));
 
     for (int i = 1; i < RINGBUFFER_SIZE; ++i)
     {
         int k = rb_peek_front(&rb);
-        assert(k == i);
+        CHECK(k == i);
         rb_pop_front(&rb);
-        assert(!rb_is_full(&rb));
+        CHECK(!rb_is_full(&rb));
     }
-    assert(rb_is_empty(&rb));
+    CHECK(rb_is_empty(&rb));
 }
+
+#undef CHECK
