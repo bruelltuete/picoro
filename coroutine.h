@@ -15,7 +15,7 @@ struct CoroutineHeader;
 struct Waitable
 {
     CoroutineHeader*    waitchain;
-    // FIXME: i'm not sure i want a counting semaphore...
+    // FIXME: i'm not sure i want a counting semaphore... i'm pretty sure i dont want one!
     int8_t              semaphore;      // >0 means signalled.
 
     Waitable()
