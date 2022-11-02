@@ -72,14 +72,14 @@ struct Coroutine : CoroutineHeader
 
 /**
  * Entry-point for our coroutine.
- * Looks like \code uint32_t myfunc(int param) \endcode
+ * Looks like \code uint32_t myfunc(uint32_t param) \endcode
  * The return value is the exit code, which can be queried later via FIXME.
  */
 typedef uint32_t (*coroutinefp_t)(uint32_t);
 static_assert(sizeof(uint32_t) >= sizeof(void*));
 
 // stacksize unit is number of uint32_ts
-extern void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize);
+extern void yield_and_start_ex(coroutinefp_t func, uint32_t param, CoroutineHeader* storage, int stacksize);
 
 /**
  * @brief Exits the currently running coroutine by taking it off the scheduler and yielding.
@@ -106,7 +106,7 @@ extern void yield();
  * @param storage stack etc for this new coroutine
  */
 template <int StackSize>
-void yield_and_start(coroutinefp_t func, int param, struct Coroutine<StackSize>* storage)
+void yield_and_start(coroutinefp_t func, uint32_t param, struct Coroutine<StackSize>* storage)
 {
     yield_and_start_ex(func, param, storage, StackSize);
 }

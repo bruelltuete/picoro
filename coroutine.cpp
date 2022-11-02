@@ -281,7 +281,7 @@ void yield()
 }
 
 // One extra step for calling coro's entry point to make sure there's a yield_and_exit() when it returns.
-static void entry_point_wrapper(coroutinefp_t func, int param)
+static void entry_point_wrapper(coroutinefp_t func, uint32_t param)
 {
     PROFILE_THIS_FUNC;
 
@@ -380,7 +380,7 @@ static void install_stack_guard(void* stacktop)
 }
 #endif // if PICO_USE_STACK_GUARDS
 
-void yield_and_start_ex(coroutinefp_t func, int param, CoroutineHeader* storage, int stacksize)
+void yield_and_start_ex(coroutinefp_t func, uint32_t param, CoroutineHeader* storage, int stacksize)
 {
     PROFILE_THIS_FUNC;
 
