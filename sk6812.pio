@@ -1,0 +1,54 @@
+.program sk6812
+
+.side_set 1
+
+; 12 "cycles" in total, for each bit transmitted
+; to transmit L bit:
+;   111000000000
+; to transmit H bit:
+;   111111000000
+;
+
+.wrap_target
+bitloop:
+    ; always start with low pin, in case we stall this gets interpreted as reset/latch
+    out x, 1        side 0  [0]
+
+    jmp !x do_zero  side 1  [2]             ; 3 cycle
+do_one:
+    nop             side 1  [2]             ; 3 cycles
+    jmp  bitloop    side 0  [4]             ; 5 cycles (+1 for the out at top)
+do_zero:
+    nop             side 0  [7]             ; 8 cycles (+1 for the out at top)
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void sk6812_program_init(PIO pio, uint sm, uint offset, uint pin, int freq) {
+
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    pio_sm_config c = sk6812_program_get_default_config(offset);
+
+    // we use side-set to actually manipulate the data pin.
+    sm_config_set_sideset_pins(&c, pin);
+
+    // after having pushed out 24 bits (grb), auto-pull from the 32-bit tx fifo.
+    // we are feeding grbx pixels from the cpu side, and convert that into grb on the fly here.
+    sm_config_set_out_shift(&c, false, true, 24);
+
+    // there's no input, we only output. so use all fifo space for output.
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    // our SM needs to run at a freq that is high enough to push out 12 "bits" within one period of 800 kHz.
+    // every payload bit is encoded as 12 carrier "bits".
+    int cycles_per_bit = 12;
+    float div = (float) clock_get_hz(clk_sys) / (float) (freq * cycles_per_bit);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
