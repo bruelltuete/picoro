@@ -17,7 +17,7 @@ static const unsigned int        dmairq[2] = {1, 1};
 struct CmdRingbufferEntry
 {
     int                 numcmds;
-    uint16_t*           cmds;
+    const uint16_t*     cmds;
     int                 numresults;
     uint8_t*            results;
     Waitable            waitable;
@@ -308,7 +308,7 @@ static void init(int i2cindex)
     yield_and_start(i2cdriver_func, (uint32_t) i2c, &driverstate[i2cindex].i2cdriverblock);
 }
 
-Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, uint16_t* cmds, int numresults, uint8_t* results, bool* success)
+Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_t* cmds, int numresults, uint8_t* results, bool* success)
 {
     PROFILE_THIS_FUNC;
 
