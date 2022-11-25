@@ -3,10 +3,19 @@
 #include "hardware/i2c.h"
 
 
-#define I2C_STOP    ((uint16_t) (I2C_IC_DATA_CMD_STOP_VALUE_ENABLE << I2C_IC_DATA_CMD_STOP_LSB))
-#define I2C_READ    ((uint16_t) (I2C_IC_DATA_CMD_CMD_VALUE_READ << I2C_IC_DATA_CMD_CMD_LSB))
-#define I2C_WRITE   ((uint16_t) (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB))
-#define I2C_RESTART ((uint16_t) (I2C_IC_DATA_CMD_RESTART_VALUE_ENABLE << I2C_IC_DATA_CMD_RESTART_LSB))
+/*
+
+static const uint16_t    cmds[] = {
+    I2C_START   | I2C_WRITE(123),
+    I2C_RESTART | I2C_READ(123) | I2C_STOP
+};
+
+*/
+#define I2C_START               (0)
+#define I2C_STOP                ((uint16_t) (I2C_IC_DATA_CMD_STOP_VALUE_ENABLE << I2C_IC_DATA_CMD_STOP_LSB))
+#define I2C_WRITE(value)        ((uint16_t) (((uint8_t) value) | (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB)))
+#define I2C_READ(ignored)       ((uint16_t) (I2C_IC_DATA_CMD_CMD_VALUE_READ << I2C_IC_DATA_CMD_CMD_LSB))
+#define I2C_RESTART             ((uint16_t) (I2C_IC_DATA_CMD_RESTART_VALUE_ENABLE << I2C_IC_DATA_CMD_RESTART_LSB))
 
 
 // can yield_and_wait on the return value.
