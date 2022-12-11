@@ -51,7 +51,7 @@ static struct DriverState
 
 
 template <int I>
-static void i2chandler()
+static void __no_inline_not_in_flash_func(i2chandler)()
 {
     PROFILE_THIS_FUNC;
 
@@ -99,7 +99,7 @@ static void i2chandler()
 }
 
 template <int I>
-static void dma_irq_handler()
+static void __no_inline_not_in_flash_func(dma_irq_handler)()
 {
     PROFILE_THIS_FUNC;
 
