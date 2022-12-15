@@ -1,4 +1,5 @@
 #include "picowwifi.h"
+#include "profiler.h"
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/dns.h"
@@ -10,6 +11,7 @@ enum WifiCmd
     CONNECT,
     DISCONNECT,
 
+    SENDUDP,
     HTTPHEAD,
 
     NONE = 0xdeadbeef
@@ -33,6 +35,14 @@ struct CmdRingbufferEntry
         struct
         {
             const char*     host;
+            int             port;
+            const char*     buffer;
+            int             bufferlength;
+        } sendudp;
+
+        struct
+        {
+            const char*     host;
             const char*     url;
             char*           responsebuffer;
             int*            bufferlength;
@@ -49,6 +59,8 @@ static Waitable             newcmdswaitable;
 
 static void handle_disconnect()
 {
+    PROFILE_THIS_FUNC;
+
     // FIXME: prob need to invalidate all outstanding requests/waitables
 
     int ec = cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
@@ -62,6 +74,8 @@ static void handle_disconnect()
 
 static void handle_connect(const char* ssid, const char* pw, bool* success)
 {
+    PROFILE_THIS_FUNC;
+
     // FIXME: hook the gpio 24 pin irq so we wake up when there is something coming from the wifi chip.
     cyw43_arch_init();
     cyw43_arch_enable_sta_mode();
@@ -373,8 +387,114 @@ static void handle_httphead(const char* host, const char* url, int port, char* r
     } // while true
 }
 
+enum
+{
+    SENDUDP_SEQ_RESOLVE,
+    SENDUDP_SEQ_RESOLVE_WAITING,
+    SENDUDP_SEQ_CONNECT,
+//    SENDUDP_SEQ_CONNECT_WAITING,
+    SENDUDP_SEQ_SEND,
+//    SENDUDP_SEQ_SEND_WAITING,
+//    SENDUDP_SEQ_RECV,
+    SENDUDP_SEQ_CLOSE,
+    SENDUDP_SEQ_ERROR,
+};
+
+struct SendUdpState
+{
+    ip_addr_t   remote_addr;
+    int         seq;
+};
+
+static void sendudp_domainfound_callback(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
+{
+    SendUdpState* state = (SendUdpState*) callback_arg;
+    if (ipaddr == NULL)
+    {
+        // failed to resolve, for whatever reason.
+        state->seq = SENDUDP_SEQ_ERROR;
+        return;
+    }
+
+    state->remote_addr = *ipaddr;
+    state->seq++;
+}
+
+static void handle_sendudp(const char* host, int port, const char* buffer, int bufferlength)
+{
+    PROFILE_THIS_FUNC;
+
+    err_t err = ERR_OK;
+    SendUdpState    state;
+    state.seq = SENDUDP_SEQ_RESOLVE;
+
+    struct udp_pcb* s = NULL;   // socket
+
+    while (true)
+    {
+        cyw43_arch_poll();
+        switch (state.seq)
+        {
+            case SENDUDP_SEQ_RESOLVE:
+                err = dns_gethostbyname(host, &state.remote_addr, sendudp_domainfound_callback, &state);
+                if (err == ERR_OK)
+                    state.seq = SENDUDP_SEQ_CONNECT;
+                else
+                if (err == ERR_INPROGRESS)
+                    state.seq = SENDUDP_SEQ_RESOLVE_WAITING;
+                else
+                {
+                    // malformed hostname
+                    return;
+                }
+                break;
+
+            case SENDUDP_SEQ_CONNECT:
+                s = udp_new();
+                assert(s != NULL);
+
+                cyw43_arch_lwip_begin();
+                err = udp_connect(s, &state.remote_addr, port);
+                assert(err == ERR_OK);
+                cyw43_arch_lwip_end();
+                state.seq = SENDUDP_SEQ_SEND;
+                break;
+                // we could just fall-through here but instead we'll do once around the merrygoround for the benefit of cyw43_arch_poll() above.
+            case SENDUDP_SEQ_SEND:
+            {
+                cyw43_arch_lwip_begin();
+                struct pbuf* p = pbuf_alloc_reference((void*) buffer, bufferlength, PBUF_REF);
+                udp_send(s, p);
+                pbuf_free(p);
+                cyw43_arch_lwip_end();
+                state.seq = SENDUDP_SEQ_CLOSE;
+                break;
+            }
+
+            case SENDUDP_SEQ_RESOLVE_WAITING:
+                // keep polling until callback says we are done.
+                yield_and_wait4time(make_timeout_time_ms(10));
+                break;
+
+            case SENDUDP_SEQ_CLOSE:
+                // fallthrough ok
+            case SENDUDP_SEQ_ERROR:     // FIXME: not sure we need both...
+                if (s != NULL)
+                {
+                    cyw43_arch_lwip_begin();
+                    udp_disconnect(s);
+                    udp_remove(s);
+                    cyw43_arch_lwip_end();
+                }
+                return;
+        }
+    } // while true
+}
+
 static uint32_t wififunc(uint32_t param)
 {
+    PROFILE_THIS_FUNC;
+
     bool keepspinning = true;
 
     while (keepspinning)
@@ -395,6 +515,10 @@ static uint32_t wififunc(uint32_t param)
                     keepspinning = false;
                     break;
                 
+                case SENDUDP:
+                    handle_sendudp(c.sendudp.host, c.sendudp.port, c.sendudp.buffer, c.sendudp.bufferlength);
+                    break;
+
                 case HTTPHEAD:
                     handle_httphead(c.httphead.host, c.httphead.url, c.httphead.port, c.httphead.responsebuffer, c.httphead.bufferlength);
                     break;
@@ -423,6 +547,8 @@ static uint32_t wififunc(uint32_t param)
 
 Waitable* disconnect_wifi()
 {
+    PROFILE_THIS_FUNC;
+
     // safe to "start" multiple times.
     // FIXME: but yielding too often is unnecessary
     yield_and_start(wififunc, 0, &wifiblock);
@@ -444,6 +570,8 @@ Waitable* disconnect_wifi()
 
 Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
 {
+    PROFILE_THIS_FUNC;
+
     // safe to "start" multiple times.
     // FIXME: but yielding too often is unnecessary
     yield_and_start(wififunc, 0, &wifiblock);
@@ -460,6 +588,33 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
     c.success = success;
     c.connect.ssid = ssid;
     c.connect.pw = pw;
+
+    // tell driver that there are new cmds waiting.
+    signal(&newcmdswaitable);
+
+    return &c.waitable;
+}
+
+Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength)
+{
+    PROFILE_THIS_FUNC;
+
+    // safe to "start" multiple times.
+    // FIXME: but yielding too often is unnecessary
+    yield_and_start(wififunc, 0, &wifiblock);
+
+    while (rb_is_full(&cmdindices))
+    {
+        // FIXME: does not work with countable semaphores!
+        yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
+    }
+
+    CmdRingbufferEntry&  c = cmdringbuffer[rb_push_back(&cmdindices)];
+    c.cmd = SENDUDP;
+    c.sendudp.host = host;
+    c.sendudp.port = port;
+    c.sendudp.buffer = buffer;
+    c.sendudp.bufferlength = bufferlength;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);

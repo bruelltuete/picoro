@@ -11,3 +11,7 @@ extern Waitable* disconnect_wifi();
 // does a http head request and returns the value of the date header (as an unparsed string).
 // FIXME: incorrect function name...
 extern Waitable* httpreq_head(const char* host, const char* url, int port, char* responsebuffer, int* bufferlength);
+
+// sends the byte contents of buffer to host:port using a udp packet.
+// this is not meant for continous stream but rather for small amounts of one-off data.
+extern Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength);
