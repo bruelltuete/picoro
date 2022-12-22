@@ -12,6 +12,7 @@ enum WifiCmd
     DISCONNECT,
 
     SENDUDP,
+    GETNTP,
     HTTPHEAD,
 
     NONE = 0xdeadbeef
@@ -39,6 +40,12 @@ struct CmdRingbufferEntry
             const char*     buffer;
             int             bufferlength;
         } sendudp;
+
+        struct
+        {
+            const char*     host;
+            uint64_t*       ms_since_1970;
+        } getntp;
 
         struct
         {
@@ -107,6 +114,30 @@ static void handle_connect(const char* ssid, const char* pw, bool* success)
     }
 }
 
+
+// FIXME: this is practically screaming for some c++ class stuff...
+struct CommonState
+{
+    ip_addr_t   remote_addr;
+    int         seq;
+};
+
+static void common_domainfound_callback(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
+{
+    PROFILE_THIS_FUNC;
+
+    CommonState* state = (CommonState*) callback_arg;
+    if (ipaddr == NULL)
+    {
+        // failed to resolve, for whatever reason.
+        state->seq = -1;
+        return;
+    }
+
+    state->remote_addr = *ipaddr;
+    state->seq++;
+}
+
 static const char   HTTP_REQUEST0[] =
     "HEAD ";
 // url here
@@ -122,7 +153,7 @@ static const char   HTTP_REQUEST2[] =
 
 enum
 {
-    HTTPHEAD_SEQ_RESOLVE,
+    HTTPHEAD_SEQ_RESOLVE = __LINE__,      // give a distinct value, to catch mixing up enums by mistake
     HTTPHEAD_SEQ_RESOLVE_WAITING,
     HTTPHEAD_SEQ_CONNECT,
     HTTPHEAD_SEQ_CONNECT_WAITING,
@@ -130,32 +161,15 @@ enum
     HTTPHEAD_SEQ_SEND_WAITING,
     HTTPHEAD_SEQ_RECV,
     HTTPHEAD_SEQ_CLOSE,
-    HTTPHEAD_SEQ_ERROR,
+    HTTPHEAD_SEQ_ERROR = -1,
 };
 
-struct HttpHeadState
+struct HttpHeadState : CommonState
 {
-    ip_addr_t   remote_addr;
-    int         seq;
-
     // need to drag these around into tcpclient_recv_callback
     char*       responsebuffer;
     int*        bufferlength;
 };
-
-static void tcpclient_domainfound_callback(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
-{
-    HttpHeadState* state = (HttpHeadState*) callback_arg;
-    if (ipaddr == NULL)
-    {
-        // failed to resolve, for whatever reason.
-        state->seq = HTTPHEAD_SEQ_ERROR;
-        return;
-    }
-
-    state->remote_addr = *ipaddr;
-    state->seq++;
-}
 
 static err_t tcpclient_connected_callback(void* arg, struct tcp_pcb* tpcb, err_t err)
 {
@@ -275,7 +289,7 @@ static void handle_httphead(const char* host, const char* url, int port, char* r
         switch (state.seq)
         {
             case HTTPHEAD_SEQ_RESOLVE:
-                err = dns_gethostbyname(host, &state.remote_addr, tcpclient_domainfound_callback, &state);
+                err = dns_gethostbyname(host, &state.remote_addr, common_domainfound_callback, &state);
                 if (err == ERR_OK)
                     state.seq = HTTPHEAD_SEQ_CONNECT;
                 else
@@ -368,6 +382,7 @@ static void handle_httphead(const char* host, const char* url, int port, char* r
                 cyw43_arch_lwip_end();
                 if (err != ERR_OK)
                 {
+                    // try again to close, after some time.
                     yield_and_wait4time(make_timeout_time_ms(10));
                     break;
                 }
@@ -383,42 +398,26 @@ static void handle_httphead(const char* host, const char* url, int port, char* r
                     cyw43_arch_lwip_end();
                 }
                 return;
+
+            default:
+                assert(false);
         }
     } // while true
 }
 
 enum
 {
-    SENDUDP_SEQ_RESOLVE,
+    SENDUDP_SEQ_RESOLVE = __LINE__,      // give a distinct value, to catch mixing up enums by mistake
     SENDUDP_SEQ_RESOLVE_WAITING,
     SENDUDP_SEQ_CONNECT,
-//    SENDUDP_SEQ_CONNECT_WAITING,
     SENDUDP_SEQ_SEND,
-//    SENDUDP_SEQ_SEND_WAITING,
-//    SENDUDP_SEQ_RECV,
     SENDUDP_SEQ_CLOSE,
-    SENDUDP_SEQ_ERROR,
+    SENDUDP_SEQ_ERROR = -1,
 };
 
-struct SendUdpState
+struct SendUdpState : CommonState
 {
-    ip_addr_t   remote_addr;
-    int         seq;
 };
-
-static void sendudp_domainfound_callback(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
-{
-    SendUdpState* state = (SendUdpState*) callback_arg;
-    if (ipaddr == NULL)
-    {
-        // failed to resolve, for whatever reason.
-        state->seq = SENDUDP_SEQ_ERROR;
-        return;
-    }
-
-    state->remote_addr = *ipaddr;
-    state->seq++;
-}
 
 static void handle_sendudp(const char* host, int port, const char* buffer, int bufferlength)
 {
@@ -436,7 +435,7 @@ static void handle_sendudp(const char* host, int port, const char* buffer, int b
         switch (state.seq)
         {
             case SENDUDP_SEQ_RESOLVE:
-                err = dns_gethostbyname(host, &state.remote_addr, sendudp_domainfound_callback, &state);
+                err = dns_gethostbyname(host, &state.remote_addr, common_domainfound_callback, &state);
                 if (err == ERR_OK)
                     state.seq = SENDUDP_SEQ_CONNECT;
                 else
@@ -487,6 +486,234 @@ static void handle_sendudp(const char* host, int port, const char* buffer, int b
                     cyw43_arch_lwip_end();
                 }
                 return;
+
+            default:
+                assert(false);
+        }
+    } // while true
+}
+
+struct SntpPacket
+{
+    uint8_t     mode:3;
+    uint8_t     version:3;
+    uint8_t     leap_indicator:2;
+
+    uint8_t     stratum;
+    uint8_t     poll;
+    int8_t      precision;
+
+    uint32_t    root_delay;
+    uint32_t    root_dispersion;
+    char        reference_identifier_fourcc[4];
+    uint64_t    reference_timestamp;
+    uint64_t    originate_timestamp;
+    uint64_t    receive_timestamp;
+    uint64_t    transmit_timestamp;
+};
+static_assert(sizeof(SntpPacket) == 48);
+
+enum
+{
+    GETNTP_SEQ_RESOLVE = __LINE__,      // give a distinct value, to catch mixing up enums by mistake
+    GETNTP_SEQ_RESOLVE_WAITING,
+    GETNTP_SEQ_CONNECT,
+    GETNTP_SEQ_SEND,
+    GETNTP_SEQ_RECV,
+    GETNTP_SEQ_CLOSE,
+    GETNTP_SEQ_ERROR = -1,
+};
+
+struct SntpState : CommonState
+{
+    SntpPacket          packet      __attribute__((aligned(8)));
+    absolute_time_t     reqsend_us  __attribute__((aligned(8)));
+    struct udp_pcb*     sock;
+
+    uint64_t*           ms_since_1970;  // result
+};
+static SntpState    sntpstate;      // keep in global mem instead of on stack... stack is in short supply.
+
+static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port)
+{
+    assert(arg == &sntpstate);
+    assert(pcb == sntpstate.sock);
+
+    absolute_time_t now = get_absolute_time();
+
+    // is from the server we reached out to?
+    if (ip4_addr_eq(addr, &sntpstate.remote_addr) && (port == 123))
+    {
+        // packet big enough for a valid response?
+        if (p->tot_len >= sizeof(SntpPacket))
+        {
+            // beware: pbuf_get_contiguous() is no use! it'd give us unaligned memory.
+            pbuf_copy_partial(p, &sntpstate.packet, sizeof(sntpstate.packet), 0);
+            // version the same we used? mode is server?
+            if ((sntpstate.packet.version == 4) && (sntpstate.packet.mode == 4))
+            {
+                if (sntpstate.packet.stratum >= 1)
+                {
+                    // check that server relayed our request timestamp back to us.
+                    if (sntpstate.packet.originate_timestamp == to_us_since_boot(sntpstate.reqsend_us))
+                    {
+                        // no longer bigendian...
+                        sntpstate.packet.root_delay          = __builtin_bswap32(sntpstate.packet.root_delay);
+                        sntpstate.packet.root_dispersion     = __builtin_bswap32(sntpstate.packet.root_dispersion);
+                        sntpstate.packet.reference_timestamp = __builtin_bswap64(sntpstate.packet.reference_timestamp);
+                        sntpstate.packet.receive_timestamp   = __builtin_bswap64(sntpstate.packet.receive_timestamp);
+                        sntpstate.packet.transmit_timestamp  = __builtin_bswap64(sntpstate.packet.transmit_timestamp);
+
+                        // the ntp timestamp has 32 bit integer seconds, and 32 bit fractional seconds.
+                        // so the smallest unit is 1/2^32 th second. we want microseconds.
+                        // BUT BUT BUT: don't try to do direct conversion of this absolute timestamp to microseconds!
+                        // that would loose far too much precision and the time/date you'd get would easily be 10 days off!
+                        // instead we'll do mid point calc with an 11 bit fraction, which is close to millisecond resolution.
+                        sntpstate.packet.receive_timestamp  >>= 32 - 11;
+                        sntpstate.packet.transmit_timestamp >>= 32 - 11;
+                        // lets assume that sending and receiving udp packets takes the same amount of time, ie is symmetric.
+                        // so we can align the middle of server's recv-to-send time frame, with ours.
+                        uint64_t servermiddle = (sntpstate.packet.transmit_timestamp + sntpstate.packet.receive_timestamp) / 2;
+                        uint64_t ourhalf_ms = (to_us_since_boot(now) - to_us_since_boot(sntpstate.reqsend_us)) / 2000;
+                        
+                        // ntp starts counting from 1st jan 1900. but unix epoch from 1970. that big offset here is millisec between 1900 and 1970, as defined per spec.
+                        // (looks like that value is 70 years plus 17 leap days)
+                        uint64_t t = servermiddle - ((2208988800ull << 32) >> (32 - 11));
+                        // slice off the remaining fraction, gets us an accurate seconds-since-1900.
+
+                        // add up the fraction that came from the server.
+                        uint32_t f = 0;
+                        uint32_t temp = t & ((1 << 11) - 1);
+                        if (temp & (1 << 10))   // is the 0.5s bit set?
+                            f += 500;
+                        if (temp & (1 << 9))
+                            f += 250;
+                        if (temp & (1 << 8))
+                            f += 125;
+                        if (temp & (1 << 7))
+                            f += 63;
+                        if (temp & (1 << 6))
+                            f += 31;
+
+                        *sntpstate.ms_since_1970 = (t >> 11) * 1000 + f + ourhalf_ms;
+                    }
+                }
+                else
+                {
+                    // kiss-of-death, server says fuck off.
+                    // reference_identifier_fourcc will tell us why.
+                    // but there's actually not much to do... we just drop the packet, fail the whole request, and retry with a different server next time around.
+                }
+            }
+        }
+    }
+
+    pbuf_free(p);
+    // after receiving a(ny) packet we are done.
+    sntpstate.seq = GETNTP_SEQ_CLOSE;
+}
+
+static void handle_getntp(const char* host, uint64_t* ms_since_1970)
+{
+    PROFILE_THIS_FUNC;
+
+    sntpstate.seq = GETNTP_SEQ_RESOLVE;
+    sntpstate.ms_since_1970 = ms_since_1970;
+    *sntpstate.ms_since_1970 = 0;
+    err_t       err = ERR_OK;
+
+    while (true)
+    {
+        cyw43_arch_poll();
+        switch (sntpstate.seq)
+        {
+            case GETNTP_SEQ_RESOLVE:
+                cyw43_arch_lwip_begin();
+                err = dns_gethostbyname(host, &sntpstate.remote_addr, common_domainfound_callback, &sntpstate);
+                cyw43_arch_lwip_end();
+                if (err == ERR_OK)
+                    sntpstate.seq = GETNTP_SEQ_CONNECT;
+                else
+                if (err == ERR_INPROGRESS)
+                    sntpstate.seq = GETNTP_SEQ_RESOLVE_WAITING;
+                else
+                {
+                    // malformed hostname
+                    return;
+                }
+                break;
+
+            case GETNTP_SEQ_CONNECT:
+                sntpstate.sock = udp_new();
+                assert(sntpstate.sock != NULL);
+
+                cyw43_arch_lwip_begin();
+                err = udp_connect(sntpstate.sock, &sntpstate.remote_addr, 123);
+                assert(err == ERR_OK);
+                cyw43_arch_lwip_end();
+                sntpstate.seq = GETNTP_SEQ_SEND;
+                break;
+                // we could just fall-through here but instead we'll do once around the merrygoround for the benefit of cyw43_arch_poll() above.
+
+            case GETNTP_SEQ_SEND:
+            {
+                sntpstate.reqsend_us = get_absolute_time();
+                // prep packet to send to server
+                sntpstate.packet.leap_indicator = 0;
+                sntpstate.packet.version = 4;
+                sntpstate.packet.mode = 3;  // meaning client
+                sntpstate.packet.stratum = 0;
+                sntpstate.packet.poll = 0;
+                sntpstate.packet.precision = 0;
+                sntpstate.packet.root_delay = 0;
+                sntpstate.packet.root_dispersion = 0;
+                *((uint32_t*) &sntpstate.packet.reference_identifier_fourcc[0]) = 0;
+                sntpstate.packet.reference_timestamp = 0;
+                sntpstate.packet.originate_timestamp = 0;
+                sntpstate.packet.receive_timestamp = 0;
+                // transmit timestamp is arbitrary, server just needs to relay it back to us (as a sanity check).
+                sntpstate.packet.transmit_timestamp = to_us_since_boot(sntpstate.reqsend_us);
+
+                cyw43_arch_lwip_begin();
+                struct pbuf* p = pbuf_alloc_reference((void*) &sntpstate.packet, sizeof(sntpstate.packet), PBUF_REF);
+                udp_recv(sntpstate.sock, getntp_recv, &sntpstate);
+                udp_send(sntpstate.sock, p);
+                pbuf_free(p);
+                cyw43_arch_lwip_end();
+                sntpstate.seq = GETNTP_SEQ_RECV;
+                break;
+            }
+
+            case GETNTP_SEQ_RECV:
+                // all handling is done in getntp_recv() callback.
+                // we'll wait at most 2 sec for a response, any *time* stamp later than that is not much use.
+                if (absolute_time_diff_us(sntpstate.reqsend_us, get_absolute_time()) > 2000000)
+                {
+                    sntpstate.seq = GETNTP_SEQ_ERROR;
+                    break;
+                }
+                // fallthrough is fine.
+
+            case GETNTP_SEQ_RESOLVE_WAITING:
+                // keep polling until callback says we are done.
+                yield_and_wait4time(make_timeout_time_ms(10));
+                break;
+
+            case GETNTP_SEQ_CLOSE:
+                // fallthrough ok
+            case GETNTP_SEQ_ERROR:     // FIXME: not sure we need both...
+                if (sntpstate.sock != NULL)
+                {
+                    cyw43_arch_lwip_begin();
+                    udp_disconnect(sntpstate.sock);
+                    udp_remove(sntpstate.sock);
+                    cyw43_arch_lwip_end();
+                    sntpstate.sock = NULL;
+                }
+                return;
+
+            default:
+                assert(false);
         }
     } // while true
 }
@@ -517,6 +744,10 @@ static uint32_t wififunc(uint32_t param)
                 
                 case SENDUDP:
                     handle_sendudp(c.sendudp.host, c.sendudp.port, c.sendudp.buffer, c.sendudp.bufferlength);
+                    break;
+
+                case GETNTP:
+                    handle_getntp(c.getntp.host, c.getntp.ms_since_1970);
                     break;
 
                 case HTTPHEAD:
@@ -588,6 +819,31 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
     c.success = success;
     c.connect.ssid = ssid;
     c.connect.pw = pw;
+
+    // tell driver that there are new cmds waiting.
+    signal(&newcmdswaitable);
+
+    return &c.waitable;
+}
+
+Waitable* get_ntp(const char* host, uint64_t* ms_since_1970)
+{
+    PROFILE_THIS_FUNC;
+
+    // safe to "start" multiple times.
+    // FIXME: but yielding too often is unnecessary
+    yield_and_start(wififunc, 0, &wifiblock);
+
+    while (rb_is_full(&cmdindices))
+    {
+        // FIXME: does not work with countable semaphores!
+        yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
+    }
+
+    CmdRingbufferEntry&  c = cmdringbuffer[rb_push_back(&cmdindices)];
+    c.cmd = GETNTP;
+    c.getntp.host = host;
+    c.getntp.ms_since_1970 = ms_since_1970;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);

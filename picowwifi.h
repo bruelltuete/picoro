@@ -15,3 +15,6 @@ extern Waitable* httpreq_head(const char* host, const char* url, int port, char*
 // sends the byte contents of buffer to host:port using a udp packet.
 // this is not meant for continous stream but rather for small amounts of one-off data.
 extern Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength);
+
+// sntp only, see https://www.rfc-editor.org/rfc/rfc4330
+extern Waitable* get_ntp(const char* host, uint64_t* ms_since_1970);
