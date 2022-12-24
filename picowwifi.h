@@ -17,4 +17,5 @@ extern Waitable* httpreq_head(const char* host, const char* url, int port, char*
 extern Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength);
 
 // sntp only, see https://www.rfc-editor.org/rfc/rfc4330
-extern Waitable* get_ntp(const char* host, uint64_t* ms_since_1970);
+// returns milliseconds since 1970 (unix epoch) that correspond to a local microsecond watchdog time.
+extern Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts);

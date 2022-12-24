@@ -23,7 +23,6 @@ struct CmdRingbufferEntry
     WifiCmd             cmd;
     Waitable            waitable;
 
-    bool*               success;
 
     union
     {
@@ -31,6 +30,7 @@ struct CmdRingbufferEntry
         {
             const char*     ssid;
             const char*     pw;
+            bool*           success;
         } connect;
 
         struct
@@ -43,8 +43,9 @@ struct CmdRingbufferEntry
 
         struct
         {
-            const char*     host;
-            uint64_t*       ms_since_1970;
+            const char*         host;
+            uint64_t*           ms_since_1970;
+            absolute_time_t*    localts;
         } getntp;
 
         struct
@@ -497,16 +498,16 @@ struct SntpPacket
 {
     uint8_t     mode:3;
     uint8_t     version:3;
-    uint8_t     leap_indicator:2;
+    uint8_t     leap_indicator:2;       // not used by us
 
     uint8_t     stratum;
-    uint8_t     poll;
-    int8_t      precision;
+    uint8_t     poll;                   // not used by us
+    int8_t      precision;              // not used by us
 
-    uint32_t    root_delay;
-    uint32_t    root_dispersion;
-    char        reference_identifier_fourcc[4];
-    uint64_t    reference_timestamp;
+    uint32_t    root_delay;             // not used by us
+    uint32_t    root_dispersion;        // not used by us
+    char        reference_identifier_fourcc[4]; // not used by us
+    uint64_t    reference_timestamp;    // not used by us
     uint64_t    originate_timestamp;
     uint64_t    receive_timestamp;
     uint64_t    transmit_timestamp;
@@ -531,6 +532,7 @@ struct SntpState : CommonState
     struct udp_pcb*     sock;
 
     uint64_t*           ms_since_1970;  // result
+    absolute_time_t*    localts;        // result
 };
 static SntpState    sntpstate;      // keep in global mem instead of on stack... stack is in short supply.
 
@@ -558,9 +560,6 @@ static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip
                     if (sntpstate.packet.originate_timestamp == to_us_since_boot(sntpstate.reqsend_us))
                     {
                         // no longer bigendian...
-                        sntpstate.packet.root_delay          = __builtin_bswap32(sntpstate.packet.root_delay);
-                        sntpstate.packet.root_dispersion     = __builtin_bswap32(sntpstate.packet.root_dispersion);
-                        sntpstate.packet.reference_timestamp = __builtin_bswap64(sntpstate.packet.reference_timestamp);
                         sntpstate.packet.receive_timestamp   = __builtin_bswap64(sntpstate.packet.receive_timestamp);
                         sntpstate.packet.transmit_timestamp  = __builtin_bswap64(sntpstate.packet.transmit_timestamp);
 
@@ -574,12 +573,11 @@ static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip
                         // lets assume that sending and receiving udp packets takes the same amount of time, ie is symmetric.
                         // so we can align the middle of server's recv-to-send time frame, with ours.
                         uint64_t servermiddle = (sntpstate.packet.transmit_timestamp + sntpstate.packet.receive_timestamp) / 2;
-                        uint64_t ourhalf_ms = (to_us_since_boot(now) - to_us_since_boot(sntpstate.reqsend_us)) / 2000;
+                        uint64_t ourmiddle_us = (to_us_since_boot(sntpstate.reqsend_us) + to_us_since_boot(now)) / 2;
                         
                         // ntp starts counting from 1st jan 1900. but unix epoch from 1970. that big offset here is millisec between 1900 and 1970, as defined per spec.
                         // (looks like that value is 70 years plus 17 leap days)
                         uint64_t t = servermiddle - ((2208988800ull << 32) >> (32 - 11));
-                        // slice off the remaining fraction, gets us an accurate seconds-since-1900.
 
                         // add up the fraction that came from the server.
                         uint32_t f = 0;
@@ -594,8 +592,18 @@ static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip
                             f += 63;
                         if (temp & (1 << 6))
                             f += 31;
+                        // how many do we need? want?
+                        if (temp & (1 << 5))
+                            f += 16;
+                        if (temp & (1 << 4))
+                            f += 8;
+                        if (temp & (1 << 3))
+                            f += 4;
+                        // i think at this point we have like 2ms rounding error already.
 
-                        *sntpstate.ms_since_1970 = (t >> 11) * 1000 + f + ourhalf_ms;
+                        // slice off the remaining fraction, gets us an accurate seconds-since-1900.
+                        *sntpstate.ms_since_1970 = (t >> 11) * 1000 + f;
+                        update_us_since_boot(sntpstate.localts, ourmiddle_us);
                     }
                 }
                 else
@@ -613,13 +621,15 @@ static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip
     sntpstate.seq = GETNTP_SEQ_CLOSE;
 }
 
-static void handle_getntp(const char* host, uint64_t* ms_since_1970)
+static void handle_getntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
 {
     PROFILE_THIS_FUNC;
 
     sntpstate.seq = GETNTP_SEQ_RESOLVE;
     sntpstate.ms_since_1970 = ms_since_1970;
     *sntpstate.ms_since_1970 = 0;
+    sntpstate.localts = localts;
+    *sntpstate.localts = nil_time;
     err_t       err = ERR_OK;
 
     while (true)
@@ -734,7 +744,7 @@ static uint32_t wififunc(uint32_t param)
             switch (c.cmd)
             {
                 case CONNECT:
-                    handle_connect(c.connect.ssid, c.connect.pw, c.success);
+                    handle_connect(c.connect.ssid, c.connect.pw, c.connect.success);
                     break;
                     
                 case DISCONNECT:
@@ -747,7 +757,7 @@ static uint32_t wififunc(uint32_t param)
                     break;
 
                 case GETNTP:
-                    handle_getntp(c.getntp.host, c.getntp.ms_since_1970);
+                    handle_getntp(c.getntp.host, c.getntp.ms_since_1970, c.getntp.localts);
                     break;
 
                 case HTTPHEAD:
@@ -816,7 +826,7 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
 
     CmdRingbufferEntry&  c = cmdringbuffer[rb_push_back(&cmdindices)];
     c.cmd = CONNECT;
-    c.success = success;
+    c.connect.success = success;
     c.connect.ssid = ssid;
     c.connect.pw = pw;
 
@@ -826,9 +836,12 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
     return &c.waitable;
 }
 
-Waitable* get_ntp(const char* host, uint64_t* ms_since_1970)
+Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
 {
     PROFILE_THIS_FUNC;
+
+    assert(ms_since_1970 != NULL);
+    assert(localts != NULL);
 
     // safe to "start" multiple times.
     // FIXME: but yielding too often is unnecessary
@@ -844,6 +857,7 @@ Waitable* get_ntp(const char* host, uint64_t* ms_since_1970)
     c.cmd = GETNTP;
     c.getntp.host = host;
     c.getntp.ms_since_1970 = ms_since_1970;
+    c.getntp.localts = localts;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);
