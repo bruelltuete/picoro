@@ -1,6 +1,6 @@
 #pragma once
+#include "hardware/sync.h"
 #include "linkedlist.h"
-
 
 #ifndef PICORO_ENABLE_PROFILER
 #define PICORO_ENABLE_PROFILER  0
@@ -40,13 +40,17 @@ struct ProfileStackframeHelper
     ProfileStackframeHelper(FuncProfile* current)
         : prev((FuncProfile*) currentfunction)
     {
+        uint32_t save = save_and_disable_interrupts();
         currentfunction = current;
         current->entries++;
+        restore_interrupts(save);
     }
 
     ~ProfileStackframeHelper()
     {
+        uint32_t save = save_and_disable_interrupts();
         currentfunction = prev;
+        restore_interrupts(save);
     }
 };
 

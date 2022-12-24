@@ -53,83 +53,83 @@ static struct DriverState
 template <int I>
 static void __no_inline_not_in_flash_func(i2chandler)()
 {
-    PROFILE_THIS_FUNC;
-
     uint32_t save = save_and_disable_interrupts();
-
-    uint ex = __get_current_exception();
-    assert((ex - 16) == (I2C0_IRQ + I));
-
-    i2c_inst_t* i2c = i2cinst_from_index(I);
-    uint32_t intstatus = i2c_get_hw(i2c)->intr_stat;
-
-    if (intstatus & I2C_IC_INTR_STAT_R_TX_ABRT_BITS)
     {
-        // need to read to clear the irq (it always reads as zero, nothing useful to do with the result).
-        i2c_get_hw(i2c)->clr_tx_abrt;
+        PROFILE_THIS_FUNC;
 
-        *driverstate[I].wasaborted = true;
+        uint ex = __get_current_exception();
+        assert((ex - 16) == (I2C0_IRQ + I));
 
-        // not sure which one tbh... lets cancel both.
-        // note: right now we dont care how much of the request was completed, e.g. 50% was sent, don't care. if we did we'd have to check transfer_count before cancelling!
-        dma_channel_abort(driverstate[I].dmareadchannel);
-        dma_channel_abort(driverstate[I].dmawritechannel);
+        i2c_inst_t* i2c = i2cinst_from_index(I);
+        uint32_t intstatus = i2c_get_hw(i2c)->intr_stat;
 
-        if (!driverstate[I].haswokenup)
+        if (intstatus & I2C_IC_INTR_STAT_R_TX_ABRT_BITS)
         {
-            driverstate[I].haswokenup = true;
-            wakeup(&driverstate[I].i2cdriverblock);
+            // need to read to clear the irq (it always reads as zero, nothing useful to do with the result).
+            i2c_get_hw(i2c)->clr_tx_abrt;
+
+            *driverstate[I].wasaborted = true;
+
+            // not sure which one tbh... lets cancel both.
+            // note: right now we dont care how much of the request was completed, e.g. 50% was sent, don't care. if we did we'd have to check transfer_count before cancelling!
+            dma_channel_abort(driverstate[I].dmareadchannel);
+            dma_channel_abort(driverstate[I].dmawritechannel);
+
+            if (!driverstate[I].haswokenup)
+            {
+                driverstate[I].haswokenup = true;
+                wakeup(&driverstate[I].i2cdriverblock);
+            }
+        }
+        else    // notice the else here! abort condition wins over tx-empty!
+        if (intstatus & I2C_IC_INTR_MASK_M_TX_EMPTY_BITS)
+        {
+            i2c_get_hw(i2c)->intr_mask &= ~I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
+
+            // i2c controller has successfully pushed out all the bits.
+            // now we are really done with the transfer.
+            if (!driverstate[I].haswokenup)
+            {
+                driverstate[I].haswokenup = true;
+                wakeup(&driverstate[I].i2cdriverblock);
+            }
         }
     }
-    else    // notice the else here! abort condition wins over tx-empty!
-    if (intstatus & I2C_IC_INTR_MASK_M_TX_EMPTY_BITS)
-    {
-        i2c_get_hw(i2c)->intr_mask &= ~I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
-
-        // i2c controller has successfully pushed out all the bits.
-        // now we are really done with the transfer.
-        if (!driverstate[I].haswokenup)
-        {
-            driverstate[I].haswokenup = true;
-            wakeup(&driverstate[I].i2cdriverblock);
-        }
-    }
-
     restore_interrupts(save);
 }
 
 template <int I>
 static void __no_inline_not_in_flash_func(dma_irq_handler)()
 {
-    PROFILE_THIS_FUNC;
-
     uint32_t save = save_and_disable_interrupts();
-
-    uint ex = __get_current_exception();
-    assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
-
-    bool r = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmareadchannel);
-    bool w = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmawritechannel);
-    if (r)
-        dma_irqn_acknowledge_channel(dmairq[I], driverstate[I].dmareadchannel);
-    if (w)
-        dma_irqn_acknowledge_channel(dmairq[I], driverstate[I].dmawritechannel);
-
-    driverstate[I].datareadcaused |= r;
-    driverstate[I].datawritecaused |= w;
-
-    if (driverstate[I].datawritecaused && driverstate[I].datareadcaused)
     {
-        // we really should wait for the i2c controller to push out all the bits, before claiming it's finished.
-        // otherwise dma will just fill the tx fifo and claim it's done too soon. (which gets us all sorts of weird problems)
-        i2c_inst_t* i2c = i2cinst_from_index(I);
-        i2c_get_hw(i2c)->intr_mask |= I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
+        PROFILE_THIS_FUNC;
 
-        // reset ack flags "after" handling. so that we trigger this only once!
-        driverstate[I].datareadcaused = false;
-        driverstate[I].datawritecaused = false;
+        uint ex = __get_current_exception();
+        assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
+
+        bool r = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmareadchannel);
+        bool w = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmawritechannel);
+        if (r)
+            dma_irqn_acknowledge_channel(dmairq[I], driverstate[I].dmareadchannel);
+        if (w)
+            dma_irqn_acknowledge_channel(dmairq[I], driverstate[I].dmawritechannel);
+
+        driverstate[I].datareadcaused |= r;
+        driverstate[I].datawritecaused |= w;
+
+        if (driverstate[I].datawritecaused && driverstate[I].datareadcaused)
+        {
+            // we really should wait for the i2c controller to push out all the bits, before claiming it's finished.
+            // otherwise dma will just fill the tx fifo and claim it's done too soon. (which gets us all sorts of weird problems)
+            i2c_inst_t* i2c = i2cinst_from_index(I);
+            i2c_get_hw(i2c)->intr_mask |= I2C_IC_INTR_MASK_M_TX_EMPTY_BITS;
+
+            // reset ack flags "after" handling. so that we trigger this only once!
+            driverstate[I].datareadcaused = false;
+            driverstate[I].datawritecaused = false;
+        }
     }
-
     restore_interrupts(save);
 }
 
