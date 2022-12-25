@@ -281,6 +281,9 @@ static void init(int i2cindex)
         channel_config_set_dreq(&dmawritecfg, i2c_get_dreq(i2c, true));
         dma_channel_set_config(driverstate[i2cindex].dmawritechannel, &dmawritecfg, false);
 
+        // preemptive ack to clear whatever might be left pending from some other software component.
+        dma_irqn_acknowledge_channel(dmairq[i2cindex], driverstate[i2cindex].dmawritechannel);
+        // ...might otherwise get spurious dma-completions.
         dma_irqn_set_channel_enabled(dmairq[i2cindex], driverstate[i2cindex].dmawritechannel, true);
     }
 
@@ -294,7 +297,10 @@ static void init(int i2cindex)
         channel_config_set_transfer_data_size(&dmareadcfg, DMA_SIZE_8);
         channel_config_set_dreq(&dmareadcfg, i2c_get_dreq(i2c, false));
         dma_channel_set_config(driverstate[i2cindex].dmareadchannel, &dmareadcfg, false);
-        
+
+        // preemptive ack to clear whatever might be left pending from some other software component.
+        dma_irqn_acknowledge_channel(dmairq[i2cindex], driverstate[i2cindex].dmareadchannel);
+        // ...might otherwise get spurious dma-completions.
         dma_irqn_set_channel_enabled(dmairq[i2cindex], driverstate[i2cindex].dmareadchannel, true);
     }
 
