@@ -797,6 +797,7 @@ Waitable* disconnect_wifi()
     while (rb_is_full(&cmdindices))
     {
         // FIXME: does not work with countable semaphores!
+        __breakpoint();
         yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
     }
 
@@ -821,6 +822,7 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
     while (rb_is_full(&cmdindices))
     {
         // FIXME: does not work with countable semaphores!
+        __breakpoint();
         yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
     }
 
@@ -850,6 +852,7 @@ Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* lo
     while (rb_is_full(&cmdindices))
     {
         // FIXME: does not work with countable semaphores!
+        __breakpoint();
         yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
     }
 
@@ -876,6 +879,7 @@ Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlen
     while (rb_is_full(&cmdindices))
     {
         // FIXME: does not work with countable semaphores!
+        __breakpoint();
         yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
     }
 
@@ -905,6 +909,7 @@ Waitable* httpreq_head(const char* host, const char* url, int port, char* respon
     while (rb_is_full(&cmdindices))
     {
         // FIXME: does not work with countable semaphores!
+        __breakpoint();
         yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
     }
 

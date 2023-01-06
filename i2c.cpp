@@ -36,7 +36,7 @@ static struct DriverState
 
     CmdRingbufferEntry  cmdringbuffer[RINGBUFFER_SIZE];
 
-    bool*               wasaborted;     // FIXME: should this be volatile? not sure... dont think so?
+    volatile bool*      wasaborted;
     volatile bool       datareadcaused;
     volatile bool       datawritecaused;
     volatile bool       haswokenup;
@@ -331,6 +331,7 @@ Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_
         // if cmd buffer is full then wait for current transfer to finish.
         // note that this is a loop because there might be another coro waiting for this transfer already and it might be woken sooner than us and queue another transfer in front of us.
         // FIXME: i dont think this works... what if a client of this driver is waiting on that waitable too?
+        __breakpoint();
         yield_and_wait4signal(&driverstate[i2cindex].cmdringbuffer[rb_peek_front(&driverstate[i2cindex].cmdindices)].waitable);
     }
 
