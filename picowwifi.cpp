@@ -696,8 +696,9 @@ static void handle_getntp(const char* host, uint64_t* ms_since_1970, absolute_ti
 
             case GETNTP_SEQ_RECV:
                 // all handling is done in getntp_recv() callback.
-                // we'll wait at most 2 sec for a response, any *time* stamp later than that is not much use.
-                if (absolute_time_diff_us(sntpstate.reqsend_us, get_absolute_time()) > 2000000)
+                // we'll wait at most 1 sec for a response, any *time* stamp later than that is not much use.
+                // rather than wait longer, we better fail early and try again.
+                if (absolute_time_diff_us(sntpstate.reqsend_us, get_absolute_time()) > 1000000)
                 {
                     sntpstate.seq = GETNTP_SEQ_ERROR;
                     break;
