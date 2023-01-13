@@ -9,6 +9,12 @@
 #include <string.h>
 
 
+#if PICORO_SCHEDFUNC_IN_RAM
+#define SCHEDFUNC(f)    __no_inline_not_in_flash_func(f)
+#else
+#define SCHEDFUNC(f)    f
+#endif
+
 // head is currently running.
 static struct LinkedList    ready2run;
 static struct LinkedList    waiting4timer;
@@ -47,7 +53,7 @@ static bool is_live(CoroutineHeader* storage, int stacksize);
 static void uninstall_stack_guard(void* stacktop);
 
 
-static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
+static int64_t SCHEDFUNC(timeouthandler)(alarm_id_t id, CoroutineHeader* coro)
 {
     PROFILE_THIS_FUNC;
 
@@ -73,7 +79,7 @@ static int64_t timeouthandler(alarm_id_t id, CoroutineHeader* coro)
 }
 
 // assumes it gets called with lock held (or an equivalent of that).
-static void prime_scheduler_timer_locked()
+static void SCHEDFUNC(prime_scheduler_timer_locked)()
 {
     PROFILE_THIS_FUNC;
 
@@ -110,7 +116,7 @@ static void prime_scheduler_timer_locked()
     }
 }
 
-static void idle_lightsleep()
+static void SCHEDFUNC(idle_lightsleep)()
 {
     PROFILE_THIS_FUNC;
 
@@ -129,7 +135,7 @@ static void idle_lightsleep()
 
 // returns stack pointer for next coro
 // the extern-C is here because i want an unmangled name that's easy to be called from yield()'s asm section.
-extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
+extern "C" volatile uint32_t* SCHEDFUNC(schedule_next)(volatile uint32_t* current_sp)
 {
     PROFILE_THIS_FUNC;
 
@@ -227,7 +233,7 @@ extern "C" volatile uint32_t* schedule_next(volatile uint32_t* current_sp)
     return upnext->sp;
 }
 
-void __attribute__ ((naked)) yield1(volatile uint32_t* schedsp)
+void __attribute__ ((naked)) SCHEDFUNC(yield1)(volatile uint32_t* schedsp)
 {
     __asm volatile (
         // old stack is still active
@@ -268,7 +274,7 @@ void __attribute__ ((naked)) yield1(volatile uint32_t* schedsp)
     __breakpoint();
 }
 
-void yield()
+void SCHEDFUNC(yield)()
 {
     PROFILE_THIS_FUNC;
 
@@ -281,7 +287,7 @@ void yield()
 }
 
 // One extra step for calling coro's entry point to make sure there's a yield_and_exit() when it returns.
-static void entry_point_wrapper(coroutinefp_t func, uint32_t param)
+static void SCHEDFUNC(entry_point_wrapper)(coroutinefp_t func, uint32_t param)
 {
     PROFILE_THIS_FUNC;
 
@@ -294,7 +300,7 @@ static void entry_point_wrapper(coroutinefp_t func, uint32_t param)
     __breakpoint();
 }
 
-static bool is_live(CoroutineHeader* storage, int stacksize)
+static bool SCHEDFUNC(is_live)(CoroutineHeader* storage, int stacksize)
 {
     PROFILE_THIS_FUNC;
 
@@ -308,7 +314,7 @@ static bool is_live(CoroutineHeader* storage, int stacksize)
 }
 
 #if PICO_USE_STACK_GUARDS
-static void uninstall_stack_guard(void* stacktop)
+static void SCHEDFUNC(uninstall_stack_guard)(void* stacktop)
 {
     PROFILE_THIS_FUNC;
 
@@ -334,7 +340,7 @@ static void uninstall_stack_guard(void* stacktop)
     }
 }
 
-static void install_stack_guard(void* stacktop)
+static void SCHEDFUNC(install_stack_guard)(void* stacktop)
 {
     PROFILE_THIS_FUNC;
 
@@ -380,7 +386,7 @@ static void install_stack_guard(void* stacktop)
 }
 #endif // if PICO_USE_STACK_GUARDS
 
-void yield_and_start_ex(coroutinefp_t func, uint32_t param, CoroutineHeader* storage, int stacksize)
+void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, CoroutineHeader* storage, int stacksize)
 {
     PROFILE_THIS_FUNC;
 
@@ -483,7 +489,7 @@ void yield_and_start_ex(coroutinefp_t func, uint32_t param, CoroutineHeader* sto
     }
 }
 
-void yield_and_exit(uint32_t exitcode)
+void SCHEDFUNC(yield_and_exit)(uint32_t exitcode)
 {
     PROFILE_THIS_FUNC;
 
@@ -498,7 +504,7 @@ void yield_and_exit(uint32_t exitcode)
     yield();
 }
 
-void yield_and_wait4time(absolute_time_t until)
+void SCHEDFUNC(yield_and_wait4time)(absolute_time_t until)
 {
     PROFILE_THIS_FUNC;
 
@@ -513,14 +519,14 @@ void yield_and_wait4time(absolute_time_t until)
     yield();
 }
 
-void yield_and_wait4wakeup()
+void SCHEDFUNC(yield_and_wait4wakeup)()
 {
     PROFILE_THIS_FUNC;
 
     yield_and_wait4time(at_the_end_of_time);
 }
 
-void yield_and_wait4signal(Waitable* other)
+void SCHEDFUNC(yield_and_wait4signal)(Waitable* other)
 {
     PROFILE_THIS_FUNC;
 
@@ -564,7 +570,7 @@ void yield_and_wait4signal(Waitable* other)
 }
 
 /** @internal */
-static void wakeup_locked(CoroutineHeader* coro)
+static void SCHEDFUNC(wakeup_locked)(CoroutineHeader* coro)
 {
     PROFILE_THIS_FUNC;
 
@@ -589,7 +595,7 @@ static void wakeup_locked(CoroutineHeader* coro)
     }
 }
 
-void wakeup(CoroutineHeader* coro)
+void SCHEDFUNC(wakeup)(CoroutineHeader* coro)
 {
     PROFILE_THIS_FUNC;
 
@@ -602,7 +608,7 @@ void wakeup(CoroutineHeader* coro)
     // never ever call yield() here!
 }
 
-void signal(Waitable* waitable)
+void SCHEDFUNC(signal)(Waitable* waitable)
 {
     PROFILE_THIS_FUNC;
 
@@ -624,7 +630,7 @@ void signal(Waitable* waitable)
     critical_section_exit(&lock);
 }
 
-bool check_debugger_attached()
+bool SCHEDFUNC(check_debugger_attached)()
 {
     PROFILE_THIS_FUNC;
 

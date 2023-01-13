@@ -8,6 +8,11 @@
 #define PICORO_TRACK_EXECUTION_TIME     0
 #endif
 
+// define to place scheduler functions in ram. some of these are called *very* often
+#ifndef PICORO_SCHEDFUNC_IN_RAM
+#define PICORO_SCHEDFUNC_IN_RAM         0
+#endif
+
 
 // forward decl
 struct CoroutineHeader;
