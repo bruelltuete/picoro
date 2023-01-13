@@ -3,6 +3,12 @@
 #include "hardware/i2c.h"
 
 
+// define to place i2c driver functions in ram.
+#ifndef PICORO_I2CDRV_IN_RAM
+#define PICORO_I2CDRV_IN_RAM         0
+#endif
+
+
 /*
 
 static const uint16_t    cmds[] = {

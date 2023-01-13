@@ -9,7 +9,15 @@
 #define RINGBUFFER_SIZE 4
 #include "ringbuffer.h"
 
-static i2c_inst_t* i2cinst_from_index(int index);
+
+#if PICORO_I2CDRV_IN_RAM
+#define DRVFUNC(f)    __no_inline_not_in_flash_func(f)
+#else
+#define DRVFUNC(f)    f
+#endif
+
+
+//static i2c_inst_t* i2cinst_from_index(int index);
 
 
 static const unsigned int        dmairq[2] = {1, 1};
@@ -50,6 +58,19 @@ static struct DriverState
 }           driverstate[2];
 
 
+static __force_inline i2c_inst_t* i2cinst_from_index(int index)
+{
+    switch (index)
+    {
+    case 0: return i2c0;
+    case 1: return i2c1;
+    default:
+        assert(false);
+    }
+    __breakpoint();
+    return NULL;
+}
+
 template <int I>
 static void __no_inline_not_in_flash_func(i2chandler)()
 {
@@ -57,8 +78,7 @@ static void __no_inline_not_in_flash_func(i2chandler)()
     {
         PROFILE_THIS_FUNC;
 
-        uint ex = __get_current_exception();
-        assert((ex - 16) == (I2C0_IRQ + I));
+        assert((__get_current_exception() - 16) == (I2C0_IRQ + I));
 
         i2c_inst_t* i2c = i2cinst_from_index(I);
         uint32_t intstatus = i2c_get_hw(i2c)->intr_stat;
@@ -105,8 +125,7 @@ static void __no_inline_not_in_flash_func(dma_irq_handler)()
     {
         PROFILE_THIS_FUNC;
 
-        uint ex = __get_current_exception();
-        assert((ex - 16) == (DMA_IRQ_0 + dmairq[I]));
+        assert((__get_current_exception() - 16) == (DMA_IRQ_0 + dmairq[I]));
 
         bool r = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmareadchannel);
         bool w = dma_irqn_get_channel_status(dmairq[I], driverstate[I].dmawritechannel);
@@ -135,7 +154,7 @@ static void __no_inline_not_in_flash_func(dma_irq_handler)()
 
 static const irq_handler_t dmahandlers[] = {dma_irq_handler<0>, dma_irq_handler<1>};
 
-static void deinit(int i2cindex)
+static void DRVFUNC(deinit)(int i2cindex)
 {
     PROFILE_THIS_FUNC;
 
@@ -157,7 +176,7 @@ static void deinit(int i2cindex)
     driverstate[i2cindex].dmawritechannel = -1;
 }
 
-static uint32_t i2cdriver_func(uint32_t param)
+static uint32_t DRVFUNC(i2cdriver_func)(uint32_t param)
 {
     PROFILE_THIS_FUNC;
 
@@ -241,19 +260,7 @@ static uint32_t i2cdriver_func(uint32_t param)
     return 0;
 }
 
-static i2c_inst_t* i2cinst_from_index(int index)
-{
-    switch (index)
-    {
-    case 0: return i2c0;
-    case 1: return i2c1;
-    default:
-        assert(false);
-    }
-    assert(false);
-}
-
-static void init(int i2cindex)
+static void DRVFUNC(init)(int i2cindex)
 {
     PROFILE_THIS_FUNC;
 
@@ -314,7 +321,7 @@ static void init(int i2cindex)
     yield_and_start(i2cdriver_func, (uint32_t) i2c, &driverstate[i2cindex].i2cdriverblock);
 }
 
-Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_t* cmds, int numresults, uint8_t* results, bool* success)
+Waitable* DRVFUNC(queue_cmds)(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_t* cmds, int numresults, uint8_t* results, bool* success)
 {
     PROFILE_THIS_FUNC;
 
@@ -349,7 +356,7 @@ Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_
     return &c.waitable;
 }
 
-const CoroutineHeader* get_driver_coro(i2c_inst_t* i2c)
+const CoroutineHeader* DRVFUNC(get_driver_coro)(i2c_inst_t* i2c)
 {
     PROFILE_THIS_FUNC;
 
@@ -361,7 +368,7 @@ const CoroutineHeader* get_driver_coro(i2c_inst_t* i2c)
     return &driverstate[i2cindex].i2cdriverblock;
 }
 
-void stop_i2c_driver_async()
+void DRVFUNC(stop_i2c_driver_async)()
 {
     PROFILE_THIS_FUNC;
 
