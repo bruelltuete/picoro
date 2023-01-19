@@ -12,6 +12,7 @@ enum WifiCmd
     DISCONNECT,
 
     SENDUDP,
+    SENDTCP,
     GETNTP,
     HTTPHEAD,
 
@@ -39,7 +40,8 @@ struct CmdRingbufferEntry
             int             port;
             const char*     buffer;
             int             bufferlength;
-        } sendudp;
+            bool*           success;
+        } send_udp_or_tcp;
 
         struct
         {
@@ -174,7 +176,7 @@ struct HttpHeadState : CommonState
 
 static err_t tcpclient_connected_callback(void* arg, struct tcp_pcb* tpcb, err_t err)
 {
-    HttpHeadState* state = (HttpHeadState*) arg;
+    CommonState* state = (CommonState*) arg;
 
     // docs say parameter err is always ERR_OK, should prob have a defensive check here somewhere.
 
@@ -187,13 +189,15 @@ static err_t tcpclient_connected_callback(void* arg, struct tcp_pcb* tpcb, err_t
 
 static err_t tcpclient_sent_callback(void* arg, struct tcp_pcb* tpcb, u16_t len)
 {
-    HttpHeadState* state = (HttpHeadState*) arg;
+    CommonState* state = (CommonState*) arg;
 
     // debug?
     cyw43_arch_lwip_check();
 
-    // queue/send more data, or free up whatever buffer is now no longer required.
-
+    // FIXME: check how much len is of the user supplied buffer!
+    //        have we transmitted all of it?
+    //        maybe put a "outstanding_data" counter into CommonState.
+    //        and/or introduce a sendacked state...
     state->seq++;
     return ERR_OK;
 }
@@ -257,12 +261,13 @@ static err_t tcpclient_recv_callback(void* arg, struct tcp_pcb* tpcb, struct pbu
 
 static void tcpclient_err_callback(void* arg, err_t err)
 {
-    HttpHeadState* state = (HttpHeadState*) arg;
+    CommonState* state = (CommonState*) arg;
     // beware: docs say tcp_pcb is gone at this point. but that does not seem to be true?!
 
     // debug?
     cyw43_arch_lwip_check();
 
+    // all "error" states have -1 as value.
     state->seq = HTTPHEAD_SEQ_ERROR;
 }
 
@@ -408,40 +413,48 @@ static void handle_httphead(const char* host, const char* url, int port, char* r
 
 enum
 {
-    SENDUDP_SEQ_RESOLVE = __LINE__,      // give a distinct value, to catch mixing up enums by mistake
-    SENDUDP_SEQ_RESOLVE_WAITING,
-    SENDUDP_SEQ_CONNECT,
-    SENDUDP_SEQ_SEND,
-    SENDUDP_SEQ_CLOSE,
-    SENDUDP_SEQ_ERROR = -1,
+    SENDUDPTCP_SEQ_RESOLVE = __LINE__,      // give a distinct value, to catch mixing up enums by mistake
+    SENDUDPTCP_SEQ_RESOLVE_WAITING,
+    SENDUDPTCP_SEQ_CONNECT,
+    SENDTCP_SEQ_CONNECT_WAITING,            // tcp only
+    SENDUDPTCP_SEQ_SEND,
+    SENDTCP_SEQ_SEND_WAITING,               // tcp only
+    SENDUDPTCP_SEQ_CLOSE,
+    SENDUDPTCP_SEQ_ERROR = -1,
 };
 
 struct SendUdpState : CommonState
 {
+    union
+    {
+        struct udp_pcb* udpsock;
+        struct tcp_pcb* tcpsock;
+    };
 };
 
-static void handle_sendudp(const char* host, int port, const char* buffer, int bufferlength)
+static void handle_sendudptcp(const char* host, int port, const char* buffer, int bufferlength, bool is_tcp, bool* success)
 {
     PROFILE_THIS_FUNC;
 
     err_t err = ERR_OK;
     SendUdpState    state;
-    state.seq = SENDUDP_SEQ_RESOLVE;
+    state.seq = SENDUDPTCP_SEQ_RESOLVE;
+    state.udpsock = NULL;
 
-    struct udp_pcb* s = NULL;   // socket
+    *success = false;
 
     while (true)
     {
         cyw43_arch_poll();
         switch (state.seq)
         {
-            case SENDUDP_SEQ_RESOLVE:
+            case SENDUDPTCP_SEQ_RESOLVE:
                 err = dns_gethostbyname(host, &state.remote_addr, common_domainfound_callback, &state);
                 if (err == ERR_OK)
-                    state.seq = SENDUDP_SEQ_CONNECT;
+                    state.seq = SENDUDPTCP_SEQ_CONNECT;
                 else
                 if (err == ERR_INPROGRESS)
-                    state.seq = SENDUDP_SEQ_RESOLVE_WAITING;
+                    state.seq = SENDUDPTCP_SEQ_RESOLVE_WAITING;
                 else
                 {
                     // malformed hostname
@@ -449,42 +462,115 @@ static void handle_sendudp(const char* host, int port, const char* buffer, int b
                 }
                 break;
 
-            case SENDUDP_SEQ_CONNECT:
-                s = udp_new();
-                assert(s != NULL);
+            case SENDUDPTCP_SEQ_CONNECT:
+                if (is_tcp)
+                {
+                    state.tcpsock = tcp_new_ip_type(IP_GET_TYPE(&state.remote_addr));
+                    assert(state.tcpsock != NULL);
 
-                cyw43_arch_lwip_begin();
-                err = udp_connect(s, &state.remote_addr, port);
-                assert(err == ERR_OK);
-                cyw43_arch_lwip_end();
-                state.seq = SENDUDP_SEQ_SEND;
-                break;
-                // we could just fall-through here but instead we'll do once around the merrygoround for the benefit of cyw43_arch_poll() above.
-            case SENDUDP_SEQ_SEND:
-            {
-                cyw43_arch_lwip_begin();
-                struct pbuf* p = pbuf_alloc_reference((void*) buffer, bufferlength, PBUF_REF);
-                udp_send(s, p);
-                pbuf_free(p);
-                cyw43_arch_lwip_end();
-                state.seq = SENDUDP_SEQ_CLOSE;
-                break;
-            }
+                    // attach our own state object to the pcb, so we get it during callbacks.
+                    tcp_arg(state.tcpsock, &state);
+                    // callback for "fatal" errors, like out of mem? or "connection refused".
+                    tcp_err(state.tcpsock, tcpclient_err_callback);
 
-            case SENDUDP_SEQ_RESOLVE_WAITING:
+                    // set state before tcp_connect() on the odd chance that the callback is
+                    // invoked synchronously inside.
+                    state.seq = SENDTCP_SEQ_CONNECT_WAITING;
+
+                    // starts connecting (but does not wait), when done callback is invoked.
+                    cyw43_arch_lwip_begin();
+                    err = tcp_connect(state.tcpsock, &state.remote_addr, port, tcpclient_connected_callback);
+                    cyw43_arch_lwip_end();
+                }
+                else
+                {
+                    state.udpsock = udp_new();
+                    assert(state.udpsock != NULL);
+
+                    cyw43_arch_lwip_begin();
+                    err = udp_connect(state.udpsock, &state.remote_addr, port);
+                    assert(err == ERR_OK);
+                    cyw43_arch_lwip_end();
+                    state.seq = SENDUDPTCP_SEQ_SEND;
+                    // we could just fall-through here but instead we'll do once around the merrygoround for the benefit of cyw43_arch_poll() above.
+                }
+                break;
+                
+            case SENDUDPTCP_SEQ_SEND:
+                cyw43_arch_lwip_begin();
+                if (is_tcp)
+                {
+                    state.seq = SENDTCP_SEQ_SEND_WAITING;
+                    // callback for when data "has been sent" and ack'd by the remote end.
+                    tcp_sent(state.tcpsock, tcpclient_sent_callback);
+                    tcp_write(state.tcpsock, buffer, bufferlength, 0);
+                    tcp_output(state.tcpsock);
+                    // note to self: send-callback incs send-waiting to close.
+                }
+                else
+                {
+                    struct pbuf* p = pbuf_alloc_reference((void*) buffer, bufferlength, PBUF_REF);
+                    udp_send(state.udpsock, p);
+                    // ignore return value of send(), udp is unreliable.
+                    pbuf_free(p);
+                    state.seq = SENDUDPTCP_SEQ_CLOSE;
+                }
+                cyw43_arch_lwip_end();
+                break;
+
+            case SENDUDPTCP_SEQ_RESOLVE_WAITING:
+            case SENDTCP_SEQ_CONNECT_WAITING:
+            case SENDTCP_SEQ_SEND_WAITING:
                 // keep polling until callback says we are done.
                 yield_and_wait4time(make_timeout_time_ms(10));
                 break;
 
-            case SENDUDP_SEQ_CLOSE:
-                // fallthrough ok
-            case SENDUDP_SEQ_ERROR:     // FIXME: not sure we need both...
-                if (s != NULL)
+            case SENDUDPTCP_SEQ_CLOSE:
+                if (is_tcp)
                 {
                     cyw43_arch_lwip_begin();
-                    udp_disconnect(s);
-                    udp_remove(s);
+                    err = tcp_close(state.tcpsock);
                     cyw43_arch_lwip_end();
+                    if (err != ERR_OK)
+                    {
+                        // try again to close, after some time.
+                        yield_and_wait4time(make_timeout_time_ms(10));
+                        break;
+                    }
+                    state.tcpsock = NULL;
+                    // success only after we've closed the socket.
+                    *success = true;
+                }
+                else
+                {
+                    cyw43_arch_lwip_begin();
+                    udp_disconnect(state.udpsock);
+                    udp_remove(state.udpsock);
+                    cyw43_arch_lwip_end();
+                    *success = true;
+                }
+                return;
+
+            case SENDUDPTCP_SEQ_ERROR:
+                *success = false;
+                if (is_tcp)
+                {
+                    if (state.tcpsock != NULL)
+                    {
+                        cyw43_arch_lwip_begin();
+                        tcp_close(state.tcpsock);
+                        cyw43_arch_lwip_end();
+                    }
+                }
+                else
+                {
+                    if (state.udpsock != NULL)
+                    {
+                        cyw43_arch_lwip_begin();
+                        udp_disconnect(state.udpsock);
+                        udp_remove(state.udpsock);
+                        cyw43_arch_lwip_end();
+                    }
                 }
                 return;
 
@@ -754,7 +840,10 @@ static uint32_t wififunc(uint32_t param)
                     break;
                 
                 case SENDUDP:
-                    handle_sendudp(c.sendudp.host, c.sendudp.port, c.sendudp.buffer, c.sendudp.bufferlength);
+                    handle_sendudptcp(c.send_udp_or_tcp.host, c.send_udp_or_tcp.port, c.send_udp_or_tcp.buffer, c.send_udp_or_tcp.bufferlength, false, c.send_udp_or_tcp.success);
+                    break;
+                case SENDTCP:
+                    handle_sendudptcp(c.send_udp_or_tcp.host, c.send_udp_or_tcp.port, c.send_udp_or_tcp.buffer, c.send_udp_or_tcp.bufferlength, true, c.send_udp_or_tcp.success);
                     break;
 
                 case GETNTP:
@@ -869,7 +958,36 @@ Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* lo
     return &c.waitable;
 }
 
-Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength)
+Waitable* send_tcp(const char* host, int port, const char* buffer, int bufferlength, bool* success)
+{
+    PROFILE_THIS_FUNC;
+
+    // safe to "start" multiple times.
+    // FIXME: but yielding too often is unnecessary
+    yield_and_start(wififunc, 0, &wifiblock);
+
+    while (rb_is_full(&cmdindices))
+    {
+        // FIXME: does not work with countable semaphores!
+        __breakpoint();
+        yield_and_wait4signal(&cmdringbuffer[rb_peek_front(&cmdindices)].waitable);
+    }
+
+    CmdRingbufferEntry&  c = cmdringbuffer[rb_push_back(&cmdindices)];
+    c.cmd = SENDTCP;
+    c.send_udp_or_tcp.host = host;
+    c.send_udp_or_tcp.port = port;
+    c.send_udp_or_tcp.buffer = buffer;
+    c.send_udp_or_tcp.bufferlength = bufferlength;
+    c.send_udp_or_tcp.success = success;
+
+    // tell driver that there are new cmds waiting.
+    signal(&newcmdswaitable);
+
+    return &c.waitable;
+}
+
+Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess)
 {
     PROFILE_THIS_FUNC;
 
@@ -886,10 +1004,11 @@ Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlen
 
     CmdRingbufferEntry&  c = cmdringbuffer[rb_push_back(&cmdindices)];
     c.cmd = SENDUDP;
-    c.sendudp.host = host;
-    c.sendudp.port = port;
-    c.sendudp.buffer = buffer;
-    c.sendudp.bufferlength = bufferlength;
+    c.send_udp_or_tcp.host = host;
+    c.send_udp_or_tcp.port = port;
+    c.send_udp_or_tcp.buffer = buffer;
+    c.send_udp_or_tcp.bufferlength = bufferlength;
+    c.send_udp_or_tcp.success = maybesuccess;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);
