@@ -537,14 +537,13 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                 if (is_tcp)
                 {
                     cyw43_arch_lwip_begin();
-                    err = tcp_close(state.tcpsock);
+                    // beware: tcp_close() is likely to put the socket into a timer queue for later cleanup.
+                    // BUT: there is no later! when we return here then that's it, over and out.
+                    // so instead do an ungraceful abort which will free the socket and not do any weird timer stuff.
+                    // (side note: tcp_abort() will call our error-callback, but we dont want that nor care.)
+                    tcp_err(state.tcpsock, NULL);
+                    tcp_abort(state.tcpsock);
                     cyw43_arch_lwip_end();
-                    if (err != ERR_OK)
-                    {
-                        // try again to close, after some time.
-                        yield_and_wait4time(make_timeout_time_ms(10));
-                        break;
-                    }
                     state.tcpsock = NULL;
                     // success only after we've closed the socket.
                     *success = true;
