@@ -2,6 +2,12 @@
 #include "coroutine.h"
 
 
+// define to place wifi functions in ram.
+#ifndef PICORO_WIFIFUNC_IN_RAM
+#define PICORO_WIFIFUNC_IN_RAM         0
+#endif
+
+
 // will yield internally
 // ssid and pw need to outlive the returned Waitable!
 extern Waitable* connect_wifi(const char* ssid, const char* pw, bool* success);

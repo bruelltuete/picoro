@@ -6,6 +6,14 @@
 #define RINGBUFFER_SIZE 4
 #include "ringbuffer.h"
 
+
+#if PICORO_WIFIFUNC_IN_RAM
+#define WIFIFUNC(f)    __no_inline_not_in_flash_func(f)
+#else
+#define WIFIFUNC(f)    f
+#endif
+
+
 enum WifiCmd
 {
     CONNECT,
@@ -67,7 +75,7 @@ static CmdRingbufferEntry   cmdringbuffer[RINGBUFFER_SIZE];
 static Waitable             newcmdswaitable;
 
 
-static void handle_disconnect()
+static void WIFIFUNC(handle_disconnect)()
 {
     PROFILE_THIS_FUNC;
 
@@ -82,7 +90,7 @@ static void handle_disconnect()
     cyw43_arch_deinit();
 }
 
-static void handle_connect(const char* ssid, const char* pw, bool* success)
+static void WIFIFUNC(handle_connect)(const char* ssid, const char* pw, bool* success)
 {
     PROFILE_THIS_FUNC;
 
@@ -125,7 +133,7 @@ struct CommonState
     int         seq;
 };
 
-static void common_domainfound_callback(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
+static void WIFIFUNC(common_domainfound_callback)(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
 {
     PROFILE_THIS_FUNC;
 
@@ -174,7 +182,7 @@ struct HttpHeadState : CommonState
     int*        bufferlength;
 };
 
-static err_t tcpclient_connected_callback(void* arg, struct tcp_pcb* tpcb, err_t err)
+static err_t WIFIFUNC(tcpclient_connected_callback)(void* arg, struct tcp_pcb* tpcb, err_t err)
 {
     CommonState* state = (CommonState*) arg;
 
@@ -187,7 +195,7 @@ static err_t tcpclient_connected_callback(void* arg, struct tcp_pcb* tpcb, err_t
     return ERR_OK;
 }
 
-static err_t tcpclient_sent_callback(void* arg, struct tcp_pcb* tpcb, u16_t len)
+static err_t WIFIFUNC(tcpclient_sent_callback)(void* arg, struct tcp_pcb* tpcb, u16_t len)
 {
     CommonState* state = (CommonState*) arg;
 
@@ -202,7 +210,7 @@ static err_t tcpclient_sent_callback(void* arg, struct tcp_pcb* tpcb, u16_t len)
     return ERR_OK;
 }
 
-static err_t tcpclient_recv_callback(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err)
+static err_t WIFIFUNC(tcpclient_recv_callback)(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err)
 {
     HttpHeadState* state = (HttpHeadState*) arg;
 
@@ -221,7 +229,7 @@ static err_t tcpclient_recv_callback(void* arg, struct tcp_pcb* tpcb, struct pbu
     // we are looking for the "Date: " header, everything else is irrelevant.
     const char* httpresp = (const char*) p->payload;
     // FIXME: near-zero-copy and fragmentation might make it hard to get the header... could be split between packets...
-    for (int i = 0; i < p->len - sizeof(DATE_TOKEN) - 1; ++i)
+    for (int i = 0; i < (int)p->len - (int)sizeof(DATE_TOKEN) - 1; ++i)
     {
         // look for newlines... first thing we get is the status line, followed by headers.
         if (strncmp(&httpresp[i], DATE_TOKEN, sizeof(DATE_TOKEN) - 1) == 0)
@@ -259,7 +267,7 @@ static err_t tcpclient_recv_callback(void* arg, struct tcp_pcb* tpcb, struct pbu
     return ERR_OK;
 }
 
-static void tcpclient_err_callback(void* arg, err_t err)
+static void WIFIFUNC(tcpclient_err_callback)(void* arg, err_t err)
 {
     CommonState* state = (CommonState*) arg;
     // beware: docs say tcp_pcb is gone at this point. but that does not seem to be true?!
@@ -277,7 +285,7 @@ static void tcpclient_err_callback(void* arg, err_t err)
 char        txbuffer[1400];     // FIXME: find out from lwip? slightly less than mtu
 #endif
 
-static void handle_httphead(const char* host, const char* url, int port, char* responsebuffer, int* bufferlength)
+static void WIFIFUNC(handle_httphead)(const char* host, const char* url, int port, char* responsebuffer, int* bufferlength)
 {
     err_t err = ERR_OK;
 
@@ -432,7 +440,7 @@ struct SendUdpState : CommonState
     };
 };
 
-static void handle_sendudptcp(const char* host, int port, const char* buffer, int bufferlength, bool is_tcp, bool* success)
+static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* buffer, int bufferlength, bool is_tcp, bool* success)
 {
     PROFILE_THIS_FUNC;
 
@@ -622,7 +630,7 @@ struct SntpState : CommonState
 };
 static SntpState    sntpstate;      // keep in global mem instead of on stack... stack is in short supply.
 
-static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port)
+static void WIFIFUNC(getntp_recv)(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port)
 {
     assert(arg == &sntpstate);
     assert(pcb == sntpstate.sock);
@@ -707,7 +715,7 @@ static void getntp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip
     sntpstate.seq = GETNTP_SEQ_CLOSE;
 }
 
-static void handle_getntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
+static void WIFIFUNC(handle_getntp)(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
 {
     PROFILE_THIS_FUNC;
 
@@ -815,7 +823,7 @@ static void handle_getntp(const char* host, uint64_t* ms_since_1970, absolute_ti
     } // while true
 }
 
-static uint32_t wififunc(uint32_t param)
+static uint32_t WIFIFUNC(wififunc)(uint32_t param)
 {
     PROFILE_THIS_FUNC;
 
@@ -876,7 +884,7 @@ static uint32_t wififunc(uint32_t param)
     return 0;
 }
 
-Waitable* disconnect_wifi()
+Waitable* WIFIFUNC(disconnect_wifi)()
 {
     PROFILE_THIS_FUNC;
 
@@ -900,7 +908,7 @@ Waitable* disconnect_wifi()
     return &c.waitable;
 }
 
-Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
+Waitable* WIFIFUNC(connect_wifi)(const char* ssid, const char* pw, bool* success)
 {
     PROFILE_THIS_FUNC;
 
@@ -928,7 +936,7 @@ Waitable* connect_wifi(const char* ssid, const char* pw, bool* success)
     return &c.waitable;
 }
 
-Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
+Waitable* WIFIFUNC(get_ntp)(const char* host, uint64_t* ms_since_1970, absolute_time_t* localts)
 {
     PROFILE_THIS_FUNC;
 
@@ -958,7 +966,7 @@ Waitable* get_ntp(const char* host, uint64_t* ms_since_1970, absolute_time_t* lo
     return &c.waitable;
 }
 
-Waitable* send_tcp(const char* host, int port, const char* buffer, int bufferlength, bool* success)
+Waitable* WIFIFUNC(send_tcp)(const char* host, int port, const char* buffer, int bufferlength, bool* success)
 {
     PROFILE_THIS_FUNC;
 
@@ -987,7 +995,7 @@ Waitable* send_tcp(const char* host, int port, const char* buffer, int bufferlen
     return &c.waitable;
 }
 
-Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess)
+Waitable* WIFIFUNC(send_udp)(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess)
 {
     PROFILE_THIS_FUNC;
 
@@ -1016,7 +1024,7 @@ Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlen
     return &c.waitable;
 }
 
-Waitable* httpreq_head(const char* host, const char* url, int port, char* responsebuffer, int* bufferlength)
+Waitable* WIFIFUNC(httpreq_head)(const char* host, const char* url, int port, char* responsebuffer, int* bufferlength)
 {
     if (responsebuffer != NULL)
         assert(bufferlength != NULL);
