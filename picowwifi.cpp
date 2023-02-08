@@ -99,9 +99,16 @@ static void WIFIFUNC(handle_connect)(const char* ssid, const char* pw, bool* suc
     cyw43_arch_enable_sta_mode();
 
     int ec = cyw43_arch_wifi_connect_async(ssid, pw, CYW43_AUTH_WPA2_AES_PSK);
-    assert(ec == PICO_OK);
+    if (ec != PICO_OK)
+    {
+        // this should only happen if the chip is wonky... maybe some power glitch or whatever.
+        if (success != NULL)
+            *success = false;
+        return;
+    }
 
-    while (true)
+    // try for at most 30 sec to connect.
+    for (int i = 0; i < (30000 / 10); ++i)
     {
         cyw43_arch_poll();
 
@@ -111,18 +118,23 @@ static void WIFIFUNC(handle_connect)(const char* ssid, const char* pw, bool* suc
         {
             if (success != NULL)
                 *success = true;
-            break;
+            return;
         }
         // error?
         if (linkstatus < 0)
         {
             if (success != NULL)
                 *success = false;
-            break;
+            return;
         }
 
         yield_and_wait4time(make_timeout_time_ms(10));
     }
+
+    // timed out
+    if (success != NULL)
+        *success = false;
+    return;
 }
 
 
