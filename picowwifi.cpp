@@ -222,7 +222,7 @@ static err_t WIFIFUNC(tcpclient_sent_callback)(void* arg, struct tcp_pcb* tpcb, 
     return ERR_OK;
 }
 
-static err_t WIFIFUNC(tcpclient_recv_callback)(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err)
+static err_t WIFIFUNC(httpclient_recv_callback)(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err)
 {
     HttpHeadState* state = (HttpHeadState*) arg;
 
@@ -342,7 +342,7 @@ static void WIFIFUNC(handle_httphead)(const char* host, const char* url, int por
                 // callback for when data "has been sent" and ack'd by the remote end.
                 tcp_sent(tcp_pcb, tcpclient_sent_callback);
                 // callback for when we've received data from the remote end.
-                tcp_recv(tcp_pcb, tcpclient_recv_callback);
+                tcp_recv(tcp_pcb, httpclient_recv_callback);
                 // callback for "fatal" errors, like out of mem? or "connection refused".
                 tcp_err(tcp_pcb, tcpclient_err_callback);
 
