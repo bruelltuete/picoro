@@ -463,12 +463,13 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
 
     *success = false;
 
-    while (true)
+    for (int r = 0; ; ++r)      // count how many rounds through this loop we do, as a timeout mechanism
     {
         cyw43_arch_poll();
         switch (state.seq)
         {
             case SENDUDPTCP_SEQ_RESOLVE:
+                // should take at most 4 sec, see DNS_TMR_INTERVAL and DNS_MAX_RETRIES.
                 err = dns_gethostbyname(host, &state.remote_addr, common_domainfound_callback, &state);
                 if (err == ERR_OK)
                     state.seq = SENDUDPTCP_SEQ_CONNECT;
@@ -501,6 +502,8 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     cyw43_arch_lwip_begin();
                     err = tcp_connect(state.tcpsock, &state.remote_addr, port, tcpclient_connected_callback);
                     cyw43_arch_lwip_end();
+                    if (err != ERR_OK)
+                        state.seq = SENDUDPTCP_SEQ_ERROR;
                 }
                 else
                 {
@@ -541,8 +544,17 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
             case SENDUDPTCP_SEQ_RESOLVE_WAITING:
             case SENDTCP_SEQ_CONNECT_WAITING:
             case SENDTCP_SEQ_SEND_WAITING:
-                // keep polling until callback says we are done.
-                yield_and_wait4time(make_timeout_time_ms(10));
+                // have we spent too much time here?
+                // (approx 60 sec, not every iteration takes 10ms but it's close enough)
+                if (r > 60000/10)
+                {
+                    state.seq = SENDUDPTCP_SEQ_ERROR;
+                }
+                else
+                {
+                    // keep polling until callback says we are done.
+                    yield_and_wait4time(make_timeout_time_ms(10));
+                }
                 break;
 
             case SENDUDPTCP_SEQ_CLOSE:
@@ -577,7 +589,9 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     if (state.tcpsock != NULL)
                     {
                         cyw43_arch_lwip_begin();
-                        tcp_close(state.tcpsock);
+                        // see SENDUDPTCP_SEQ_CLOSE above, for an explanation.
+                        tcp_err(state.tcpsock, NULL);
+                        tcp_abort(state.tcpsock);
                         cyw43_arch_lwip_end();
                     }
                 }
@@ -596,7 +610,7 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
             default:
                 assert(false);
         }
-    } // while true
+    } // for (ever)
 }
 
 struct SntpPacket
