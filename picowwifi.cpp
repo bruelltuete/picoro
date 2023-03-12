@@ -3,6 +3,7 @@
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/dns.h"
+#include <algorithm>
 #define RINGBUFFER_SIZE 4
 #include "ringbuffer.h"
 
@@ -27,6 +28,17 @@ enum WifiCmd
     NONE = 0xdeadbeef
 };
 
+struct send_udp_or_tcp_s
+{
+    const char*     host;
+    int             port;
+    const char*     buffer;
+    int             bufferlength;
+    bool*           success;
+    char*           responsebuffer;
+    int*            responselength;
+} send_udp_or_tcp;
+
 struct CmdRingbufferEntry
 {
     WifiCmd             cmd;
@@ -42,14 +54,7 @@ struct CmdRingbufferEntry
             bool*           success;
         } connect;
 
-        struct
-        {
-            const char*     host;
-            int             port;
-            const char*     buffer;
-            int             bufferlength;
-            bool*           success;
-        } send_udp_or_tcp;
+        struct send_udp_or_tcp_s   send_udp_or_tcp;
 
         struct
         {
@@ -143,6 +148,9 @@ struct CommonState
 {
     ip_addr_t   remote_addr;
     int         seq;
+
+    char*       responsebuffer;
+    int         responsebufleft;    // how many bytes left in responsebuffer
 };
 
 static void WIFIFUNC(common_domainfound_callback)(const char* name, const ip_addr_t* ipaddr, void* callback_arg)
@@ -219,6 +227,55 @@ static err_t WIFIFUNC(tcpclient_sent_callback)(void* arg, struct tcp_pcb* tpcb, 
     //        maybe put a "outstanding_data" counter into CommonState.
     //        and/or introduce a sendacked state...
     state->seq++;
+    return ERR_OK;
+}
+
+static err_t WIFIFUNC(tcpclient_recv_callback)(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err)
+{
+    CommonState* state = (CommonState*) arg;
+
+    // debug?
+    cyw43_arch_lwip_check();
+
+    // connection closed.
+    if (p == NULL)
+    {
+        // if we have buffer space left then the remote end hung up first...
+        if (state->responsebufleft > 0)
+            // ...that means we need to transition to the next state now.
+            state->seq++;
+        // if it was us that hung up (eg because buffer is full) then we have already transitioned state.
+        return ERR_OK;
+    }
+
+    // there might be dangling pbufs left.
+    if (state->responsebufleft <= 0)
+    {
+        pbuf_free(p);
+        return ERR_OK;
+    }
+
+    int bytes2copy = std::min((int)p->len, state->responsebufleft);
+    memcpy(state->responsebuffer, p->payload, bytes2copy);
+    state->responsebufleft -= bytes2copy;
+    state->responsebuffer  += bytes2copy;
+
+    // filled up our response buffer? we don't care about the rest that might be in flight.
+    assert(state->responsebufleft >= 0);
+    if (state->responsebufleft == 0)
+    {
+        // transition to next state (probably a close).
+        // if server sent us a lot of data then we'll discard this at the top of this function.
+        // we do not want tcp_shutdown()! receiving data with the rx-side shut triggers errors. we dont want an error, we want to ignore.
+        state->seq++;
+    }
+    else
+    {
+        // this is a weird function... this is not an ack
+        tcp_recved(tpcb, p->tot_len);
+    }
+
+    pbuf_free(p);
     return ERR_OK;
 }
 
@@ -439,6 +496,7 @@ enum
     SENDTCP_SEQ_CONNECT_WAITING,            // tcp only
     SENDUDPTCP_SEQ_SEND,
     SENDTCP_SEQ_SEND_WAITING,               // tcp only
+    SENDUDPTCP_SEQ_RECV_WAITING,
     SENDUDPTCP_SEQ_CLOSE,
     SENDUDPTCP_SEQ_ERROR = -1,
 };
@@ -452,7 +510,8 @@ struct SendUdpState : CommonState
     };
 };
 
-static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* buffer, int bufferlength, bool is_tcp, bool* success)
+template <bool is_tcp>
+static void WIFIFUNC(handle_sendudptcp)(struct send_udp_or_tcp_s* cmd)
 {
     PROFILE_THIS_FUNC;
 
@@ -460,8 +519,10 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
     SendUdpState    state;
     state.seq = SENDUDPTCP_SEQ_RESOLVE;
     state.udpsock = NULL;
+    state.responsebuffer = cmd->responsebuffer;
+    state.responsebufleft = cmd->responselength ? *cmd->responselength : 0;
 
-    *success = false;
+    *cmd->success = false;
 
     for (int r = 0; ; ++r)      // count how many rounds through this loop we do, as a timeout mechanism
     {
@@ -470,7 +531,7 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
         {
             case SENDUDPTCP_SEQ_RESOLVE:
                 // should take at most 4 sec, see DNS_TMR_INTERVAL and DNS_MAX_RETRIES.
-                err = dns_gethostbyname(host, &state.remote_addr, common_domainfound_callback, &state);
+                err = dns_gethostbyname(cmd->host, &state.remote_addr, common_domainfound_callback, &state);
                 if (err == ERR_OK)
                     state.seq = SENDUDPTCP_SEQ_CONNECT;
                 else
@@ -500,7 +561,7 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
 
                     // starts connecting (but does not wait), when done callback is invoked.
                     cyw43_arch_lwip_begin();
-                    err = tcp_connect(state.tcpsock, &state.remote_addr, port, tcpclient_connected_callback);
+                    err = tcp_connect(state.tcpsock, &state.remote_addr, cmd->port, tcpclient_connected_callback);
                     cyw43_arch_lwip_end();
                     if (err != ERR_OK)
                         state.seq = SENDUDPTCP_SEQ_ERROR;
@@ -511,7 +572,7 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     assert(state.udpsock != NULL);
 
                     cyw43_arch_lwip_begin();
-                    err = udp_connect(state.udpsock, &state.remote_addr, port);
+                    err = udp_connect(state.udpsock, &state.remote_addr, cmd->port);
                     assert(err == ERR_OK);
                     cyw43_arch_lwip_end();
                     state.seq = SENDUDPTCP_SEQ_SEND;
@@ -526,20 +587,34 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     state.seq = SENDTCP_SEQ_SEND_WAITING;
                     // callback for when data "has been sent" and ack'd by the remote end.
                     tcp_sent(state.tcpsock, tcpclient_sent_callback);
-                    tcp_write(state.tcpsock, buffer, bufferlength, 0);
+                    // callback for when we've received data from the remote end.
+                    if (cmd->responsebuffer != NULL)
+                        tcp_recv(state.tcpsock, tcpclient_recv_callback);
+                    tcp_write(state.tcpsock, cmd->buffer, cmd->bufferlength, 0);
                     tcp_output(state.tcpsock);
-                    // note to self: send-callback incs send-waiting to close.
+                    // note to self: send-callback incs send-waiting to recv-waiting.
                 }
                 else
                 {
-                    struct pbuf* p = pbuf_alloc_reference((void*) buffer, bufferlength, PBUF_REF);
+                    struct pbuf* p = pbuf_alloc_reference((void*) cmd->buffer, cmd->bufferlength, PBUF_REF);
+                    // FIXME: receive callback!!
                     udp_send(state.udpsock, p);
                     // ignore return value of send(), udp is unreliable.
                     pbuf_free(p);
-                    state.seq = SENDUDPTCP_SEQ_CLOSE;
+                    state.seq = SENDUDPTCP_SEQ_RECV_WAITING;
                 }
                 cyw43_arch_lwip_end();
                 break;
+
+            case SENDUDPTCP_SEQ_RECV_WAITING:
+                // FIXME: in the general case, we could get a response from the server before we have sent off our request!
+                if (cmd->responsebuffer == NULL)
+                {
+                    state.seq = SENDUDPTCP_SEQ_CLOSE;
+                    break;
+                }
+                // nothing to do here, all recv code is in the callback.
+                // fallthrough is fine.
 
             case SENDUDPTCP_SEQ_RESOLVE_WAITING:
             case SENDTCP_SEQ_CONNECT_WAITING:
@@ -570,7 +645,7 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     cyw43_arch_lwip_end();
                     state.tcpsock = NULL;
                     // success only after we've closed the socket.
-                    *success = true;
+                    *cmd->success = true;
                 }
                 else
                 {
@@ -578,12 +653,14 @@ static void WIFIFUNC(handle_sendudptcp)(const char* host, int port, const char* 
                     udp_disconnect(state.udpsock);
                     udp_remove(state.udpsock);
                     cyw43_arch_lwip_end();
-                    *success = true;
+                    *cmd->success = true;
                 }
+                if (cmd->responselength != NULL)
+                    *cmd->responselength -= state.responsebufleft;
                 return;
 
             case SENDUDPTCP_SEQ_ERROR:
-                *success = false;
+                *cmd->success = false;
                 if (is_tcp)
                 {
                     if (state.tcpsock != NULL)
@@ -873,10 +950,10 @@ static uint32_t WIFIFUNC(wififunc)(uint32_t param)
                     break;
                 
                 case SENDUDP:
-                    handle_sendudptcp(c.send_udp_or_tcp.host, c.send_udp_or_tcp.port, c.send_udp_or_tcp.buffer, c.send_udp_or_tcp.bufferlength, false, c.send_udp_or_tcp.success);
+                    handle_sendudptcp<false>(&c.send_udp_or_tcp);
                     break;
                 case SENDTCP:
-                    handle_sendudptcp(c.send_udp_or_tcp.host, c.send_udp_or_tcp.port, c.send_udp_or_tcp.buffer, c.send_udp_or_tcp.bufferlength, true, c.send_udp_or_tcp.success);
+                    handle_sendudptcp<true>(&c.send_udp_or_tcp);
                     break;
 
                 case GETNTP:
@@ -991,7 +1068,7 @@ Waitable* WIFIFUNC(get_ntp)(const char* host, uint64_t* ms_since_1970, absolute_
     return &c.waitable;
 }
 
-Waitable* WIFIFUNC(send_tcp)(const char* host, int port, const char* buffer, int bufferlength, bool* success)
+Waitable* WIFIFUNC(send_tcp)(const char* host, int port, const char* buffer, int bufferlength, bool* success, char* responsebuffer, int* responsebufferlength)
 {
     PROFILE_THIS_FUNC;
 
@@ -1013,6 +1090,8 @@ Waitable* WIFIFUNC(send_tcp)(const char* host, int port, const char* buffer, int
     c.send_udp_or_tcp.buffer = buffer;
     c.send_udp_or_tcp.bufferlength = bufferlength;
     c.send_udp_or_tcp.success = success;
+    c.send_udp_or_tcp.responsebuffer = responsebuffer;
+    c.send_udp_or_tcp.responselength = responsebufferlength;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);
@@ -1020,7 +1099,7 @@ Waitable* WIFIFUNC(send_tcp)(const char* host, int port, const char* buffer, int
     return &c.waitable;
 }
 
-Waitable* WIFIFUNC(send_udp)(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess)
+Waitable* WIFIFUNC(send_udp)(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess, char* responsebuffer, int* responsebufferlength)
 {
     PROFILE_THIS_FUNC;
 
@@ -1042,6 +1121,8 @@ Waitable* WIFIFUNC(send_udp)(const char* host, int port, const char* buffer, int
     c.send_udp_or_tcp.buffer = buffer;
     c.send_udp_or_tcp.bufferlength = bufferlength;
     c.send_udp_or_tcp.success = maybesuccess;
+    c.send_udp_or_tcp.responsebuffer = responsebuffer;
+    c.send_udp_or_tcp.responselength = responsebufferlength;
 
     // tell driver that there are new cmds waiting.
     signal(&newcmdswaitable);

@@ -20,11 +20,15 @@ extern Waitable* httpreq_head(const char* host, const char* url, int port, char*
 
 // sends the byte contents of buffer to host:port using one(!) udp packet.
 // this is not meant for continous stream but rather for small amounts of one-off data.
-extern Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess);
+// if responsebuffer is non-null then it'll wait for a response, up to some (unspecified) timeout expires.
+// it will receive at most responsebufferlength and discard the rest. server might repond less though.
+extern Waitable* send_udp(const char* host, int port, const char* buffer, int bufferlength, bool* maybesuccess, char* responsebuffer = NULL, int* responsebufferlength = NULL);
 
 // sends the byte contents of buffer to host:port using tcp.
-// does not wait for a response. should be used for small amounts of one-off data.
-extern Waitable* send_tcp(const char* host, int port, const char* buffer, int bufferlength, bool* success);
+// should be used for small amounts of one-off data.
+// if responsebuffer is non-null then it'll wait for a response, up to some (unspecified) timeout expires.
+// it will receive at most responsebufferlength and discard the rest. server might repond less though.
+extern Waitable* send_tcp(const char* host, int port, const char* buffer, int bufferlength, bool* success, char* responsebuffer = NULL, int* responsebufferlength = NULL);
 
 
 // sntp only, see https://www.rfc-editor.org/rfc/rfc4330
