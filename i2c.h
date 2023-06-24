@@ -19,7 +19,7 @@ static const uint16_t    cmds[] = {
 */
 #define I2C_START               (0)
 #define I2C_STOP                ((uint16_t) (I2C_IC_DATA_CMD_STOP_VALUE_ENABLE << I2C_IC_DATA_CMD_STOP_LSB))
-#define I2C_WRITE(value)        ((uint16_t) (((uint8_t) value) | (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB)))
+#define I2C_WRITE(value)        ((uint16_t) (((uint8_t) (value)) | (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB)))
 #define I2C_READ(ignored)       ((uint16_t) (I2C_IC_DATA_CMD_CMD_VALUE_READ << I2C_IC_DATA_CMD_CMD_LSB))
 #define I2C_RESTART             ((uint16_t) (I2C_IC_DATA_CMD_RESTART_VALUE_ENABLE << I2C_IC_DATA_CMD_RESTART_LSB))
 
@@ -28,6 +28,17 @@ static const uint16_t    cmds[] = {
 // it's a mistake to specify a results buffer without including read commands! will cause a deadlock!
 // does not itself yield internally, unless internal ringbuffer is full.
 extern Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, int numcmds, const uint16_t* cmds, int numresults, uint8_t* results, bool* success);
+
+template <int C, int R>
+Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, const uint16_t (& cmds)[C], uint8_t (& results)[R], bool* success)
+{
+    return queue_cmds(i2c, address, C, &cmds[0], R, &results[0], success);
+}
+template <int C>
+Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, const uint16_t (& cmds)[C], bool* success)
+{
+    return queue_cmds(i2c, address, C, &cmds[0], 0, NULL, success);
+}
 
 // FIXME: i need an explicit init()/deinit() so that the main app can shut everything down.
 
