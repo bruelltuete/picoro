@@ -498,6 +498,7 @@ void SCHEDFUNC(yield_and_exit)(uint32_t exitcode)
         struct CoroutineHeader* self = LL_ACCESS(self, llentry, ll_peek_head(&ready2run));
         self->flags |= FLAGS_DO_NOT_RESCHEDULE;
         self->exitcode = exitcode;
+        // note to self: schedule_next sets semaphore to max value, so everyone who's waiting can wake up.
     }
     critical_section_exit(&lock);
 
@@ -524,6 +525,25 @@ void SCHEDFUNC(yield_and_wait4wakeup)()
     PROFILE_THIS_FUNC;
 
     yield_and_wait4time(at_the_end_of_time);
+}
+
+bool SCHEDFUNC(yield_and_check4signal)(Waitable* other)
+{
+    PROFILE_THIS_FUNC;
+
+    // give others a chance to signal.
+    yield();
+
+    bool has_signalled = false;
+    critical_section_enter_blocking(&lock);
+    if (other->semaphore > 0)
+    {
+        other->semaphore--;
+        has_signalled = true;
+    }
+    critical_section_exit(&lock);
+
+    return has_signalled;
 }
 
 void SCHEDFUNC(yield_and_wait4signal)(Waitable* other)

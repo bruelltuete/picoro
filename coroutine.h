@@ -120,6 +120,12 @@ void yield_and_start(coroutinefp_t func, uint32_t param, struct Coroutine<StackS
  * @brief Yields execution until "other" has exited/signaled.
  */
 extern void yield_and_wait4signal(Waitable* other);
+
+/**
+ * @brief Poll "other" for signal.
+ */
+extern bool yield_and_check4signal(Waitable* other);
+
 // FIXME: i prob want to wait for more than one... no idea how yet.
 //extern "C" uint32_t yield_and_wait4others();
 
