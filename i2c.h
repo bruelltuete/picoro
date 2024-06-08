@@ -35,6 +35,11 @@ Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, const uint16_t (& cmds)[C]
     return queue_cmds(i2c, address, C, &cmds[0], R, &results[0], success);
 }
 template <int C>
+Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, const uint16_t (& cmds)[C], uint8_t* results, bool* success)
+{
+    return queue_cmds(i2c, address, C, &cmds[0], 1, results, success);
+}
+template <int C>
 Waitable* queue_cmds(i2c_inst_t* i2c, int8_t address, const uint16_t (& cmds)[C], bool* success)
 {
     return queue_cmds(i2c, address, C, &cmds[0], 0, NULL, success);
