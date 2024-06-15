@@ -74,7 +74,7 @@ struct CmdRingbufferEntry
     };
 };
 
-static Coroutine<512>       wifiblock;
+static Coroutine<640>       wifiblock;
 static RingBuffer           cmdindices;
 static CmdRingbufferEntry   cmdringbuffer[RINGBUFFER_SIZE];
 static Waitable             newcmdswaitable;
