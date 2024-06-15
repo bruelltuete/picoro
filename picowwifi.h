@@ -8,7 +8,7 @@
 #endif
 
 
-// will yield internally
+// will yield internally, async wrt caller.
 // ssid and pw need to outlive the returned Waitable!
 extern Waitable* connect_wifi(const char* ssid, const char* pw, bool* success);
 // disconnects and stops all wifi stuff. driver will exit.
