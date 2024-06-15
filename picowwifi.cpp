@@ -28,7 +28,7 @@ enum WifiCmd
     NONE = 0xdeadbeef
 };
 
-struct send_udp_or_tcp_s
+struct SendUdpOrTcpCmdBuf
 {
     const char*     host;
     int             port;
@@ -37,7 +37,7 @@ struct send_udp_or_tcp_s
     bool*           success;
     char*           responsebuffer;
     int*            responselength;
-} send_udp_or_tcp;
+};
 
 struct CmdRingbufferEntry
 {
@@ -54,7 +54,7 @@ struct CmdRingbufferEntry
             bool*           success;
         } connect;
 
-        struct send_udp_or_tcp_s   send_udp_or_tcp;
+        struct SendUdpOrTcpCmdBuf      send_udp_or_tcp;
 
         struct
         {
@@ -149,6 +149,8 @@ struct CommonState
     ip_addr_t   remote_addr;
     int         seq;
 
+    int         sendbufleft;        // how many bytes left to send out
+
     char*       responsebuffer;
     int         responsebufleft;    // how many bytes left in responsebuffer
 };
@@ -222,11 +224,10 @@ static err_t WIFIFUNC(tcpclient_sent_callback)(void* arg, struct tcp_pcb* tpcb, 
     // debug?
     cyw43_arch_lwip_check();
 
-    // FIXME: check how much len is of the user supplied buffer!
-    //        have we transmitted all of it?
-    //        maybe put a "outstanding_data" counter into CommonState.
-    //        and/or introduce a sendacked state...
-    state->seq++;
+    state->sendbufleft -= len;
+    assert(state->sendbufleft >= 0);
+    if (state->sendbufleft == 0)
+        state->seq++;
     return ERR_OK;
 }
 
@@ -511,7 +512,7 @@ struct SendUdpState : CommonState
 };
 
 template <bool is_tcp>
-static void WIFIFUNC(handle_sendudptcp)(struct send_udp_or_tcp_s* cmd)
+static void WIFIFUNC(handle_sendudptcp)(struct SendUdpOrTcpCmdBuf* cmd)
 {
     PROFILE_THIS_FUNC;
 
@@ -590,6 +591,7 @@ static void WIFIFUNC(handle_sendudptcp)(struct send_udp_or_tcp_s* cmd)
                     // callback for when we've received data from the remote end.
                     if (cmd->responsebuffer != NULL)
                         tcp_recv(state.tcpsock, tcpclient_recv_callback);
+                    state.sendbufleft = cmd->bufferlength;
                     tcp_write(state.tcpsock, cmd->buffer, cmd->bufferlength, 0);
                     tcp_output(state.tcpsock);
                     // note to self: send-callback incs send-waiting to recv-waiting.
@@ -598,6 +600,7 @@ static void WIFIFUNC(handle_sendudptcp)(struct send_udp_or_tcp_s* cmd)
                 {
                     struct pbuf* p = pbuf_alloc_reference((void*) cmd->buffer, cmd->bufferlength, PBUF_REF);
                     // FIXME: receive callback!!
+                    state.sendbufleft = cmd->bufferlength;
                     udp_send(state.udpsock, p);
                     // ignore return value of send(), udp is unreliable.
                     pbuf_free(p);
