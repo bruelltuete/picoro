@@ -100,7 +100,8 @@ static void WIFIFUNC(handle_connect)(const char* ssid, const char* pw, bool* suc
     PROFILE_THIS_FUNC;
 
     // FIXME: hook the gpio 24 pin irq so we wake up when there is something coming from the wifi chip.
-    cyw43_arch_init();
+    // FIXME: doesnt look safe to init twice!
+    //cyw43_arch_init();
     cyw43_arch_enable_sta_mode();
 
     int ec = cyw43_arch_wifi_connect_async(ssid, pw, CYW43_AUTH_WPA2_AES_PSK);
