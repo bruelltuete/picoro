@@ -17,12 +17,12 @@ static const uint16_t    cmds[] = {
 };
 
 */
-#define I2C_START               (0)
-#define I2C_STOP                ((uint16_t) (I2C_IC_DATA_CMD_STOP_VALUE_ENABLE << I2C_IC_DATA_CMD_STOP_LSB))
-#define I2C_WRITE(value)        ((uint16_t) (((uint8_t) (value)) | (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB)))
-#define I2C_READ(ignored)       ((uint16_t) (I2C_IC_DATA_CMD_CMD_VALUE_READ << I2C_IC_DATA_CMD_CMD_LSB))
-#define I2C_RESTART             ((uint16_t) (I2C_IC_DATA_CMD_RESTART_VALUE_ENABLE << I2C_IC_DATA_CMD_RESTART_LSB))
-
+// if gcc complains about narrowing conversions, this is prob a compiler bug.
+constexpr uint16_t I2C_START = 0;
+constexpr uint16_t I2C_STOP = I2C_IC_DATA_CMD_STOP_VALUE_ENABLE << I2C_IC_DATA_CMD_STOP_LSB;
+constexpr uint16_t I2C_WRITE(uint8_t value) { return ((uint16_t) value) | (I2C_IC_DATA_CMD_CMD_VALUE_WRITE << I2C_IC_DATA_CMD_CMD_LSB); }
+constexpr uint16_t I2C_READ(int ignored) { return I2C_IC_DATA_CMD_CMD_VALUE_READ << I2C_IC_DATA_CMD_CMD_LSB; }
+constexpr uint16_t I2C_RESTART = I2C_IC_DATA_CMD_RESTART_VALUE_ENABLE << I2C_IC_DATA_CMD_RESTART_LSB;
 
 // can yield_and_wait on the return value.
 // it's a mistake to specify a results buffer without including read commands! will cause a deadlock!
