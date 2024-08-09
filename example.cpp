@@ -3,29 +3,33 @@
 #include "coroutine.h"
 
 
-struct Coroutine    block1;
-struct Coroutine    block2;
+struct Coroutine<>    block1;
+struct Coroutine<>    block2;
 
-void coroutine_2(int param)
+uint32_t coroutine_2(uint32_t param)
 {
     while (param > 0)
     {
-        printf("B: %d\n", param);
+        printf("B: %ld\n", param);
         --param;
         yield();
     }
+
+    return 0;
 }
 
-void coroutine_1(int param)
+uint32_t coroutine_1(uint32_t param)
 {
     yield_and_start(coroutine_2, 5, &block2);
 
     while (param > 0)
     {
-        printf("A: %d\n", param);
+        printf("A: %ld\n", param);
         --param;
         yield();
     }
+
+    return 0;
 }
 
 int main() 
