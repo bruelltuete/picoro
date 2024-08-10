@@ -142,4 +142,11 @@ extern void signal(Waitable* waitable);
 //extern void yield_and_wait4irq(uint irqnum, volatile bool* handlercalledalready);
 
 
+/**
+ * @brief Check if there's a debugger attached via SWD (e.g. PicoProbe).
+ * This checks the SWD registers for a core's reply to some debugger command.
+ * That means we don't know the definitive answer.
+ * @return true if a debugger has been observed.
+ * @return false if so far no debugger has been observed.
+ */
 extern bool check_debugger_attached();
