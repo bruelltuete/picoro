@@ -12,7 +12,7 @@ uint32_t coroutine_2(uint32_t param)
     {
         printf("B: %ld\n", param);
         --param;
-        yield();
+        yield_and_wait4time(make_timeout_time_ms(900));
     }
 
     return 0;
@@ -20,13 +20,13 @@ uint32_t coroutine_2(uint32_t param)
 
 uint32_t coroutine_1(uint32_t param)
 {
-    yield_and_start(coroutine_2, 5, &block2);
+    yield_and_start(coroutine_2, 50, &block2);
 
     while (param > 0)
     {
         printf("A: %ld\n", param);
         --param;
-        yield();
+        yield_and_wait4time(make_timeout_time_ms(500));
     }
 
     return 0;
@@ -40,7 +40,7 @@ int main()
 
     printf("Hello, coroutine test!\n");
 
-    yield_and_start(coroutine_1, 10, &block1);
+    yield_and_start(coroutine_1, 100, &block1);
 
     printf("done\n");
     return 0;
