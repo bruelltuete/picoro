@@ -26,9 +26,11 @@ static absolute_time_t      headrunningsince;   // Head of ready2run running sin
 #define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        // Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
 // only needs the header, no need for stack.
-static CoroutineHeader     mainflow;
+static CoroutineHeader     initialisercoro;
 
 static bool isdebuggerattached = false;     // False if we think it's unlikely that a debugger is attached. True if we are pretty sure there is one.
+
+static bool initialised = false;
 
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
@@ -36,7 +38,6 @@ static bool isdebuggerattached = false;     // False if we think it's unlikely t
 static uint32_t scheduler_stack[256]  __attribute__((aligned(32)));
 
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
-static_assert(sizeof(mainflow.llentry) == 4);
 // arm docs say that stack pointer should be 8 byte aligned, at a public interface.
 // FIXME ...which is not what this assert here checks. 
 static_assert((offsetof(struct Coroutine<>, stack) % 32) == 0);
@@ -152,65 +153,56 @@ extern "C" volatile uint32_t* SCHEDFUNC(schedule_next)(volatile uint32_t* curren
         currentcoro->timespentexecuting += absolute_time_diff_us(headrunningsince, get_absolute_time());
 #endif
 
-        // FIXME: i dont like how mainflow, which we only use 1x for init, creeps into every invocation of the scheduler.
-        if (currentcoro != &mainflow)
+        bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
+        bool is_sleeping = currentcoro->sleepcount > 0;
+
+        // here, this indicates that currentcoro is exiting.
+        if (!is_resched)
         {
-            // debug: hopefully we'll catch mem corruption cases earlier than the hardfault exception
-            assert(is_live(currentcoro, currentcoro->stacksize));
+            // this assert can fail if we have a mismatched wait4time and wake.
+            assert(!is_sleeping);
 
-            bool is_resched = !(currentcoro->flags & FLAGS_DO_NOT_RESCHEDULE);
-            bool is_sleeping = currentcoro->sleepcount > 0;
+            // mark stack pointer as invalid.
+            // trying to resume this will crash very quickly.
+            // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
+            currentcoro->sp = (uint32_t*) 1;
 
-            // here, this indicates that currentcoro is exiting.
-            if (!is_resched)
+            // when a coro exits the semaphore count doesnt matter: anyone who waits will be woken up.
+            currentcoro->waitable.semaphore = 0x7F;
+            if (currentcoro->waitable.waitchain)
             {
-                // this assert can fail if we have a mismatched wait4time and wake.
-                assert(!is_sleeping);
-
-                // mark stack pointer as invalid.
-                // trying to resume this will crash very quickly.
-                // and, this makes sure that is_live() doesnt randomly stumble over old values we left in ram from a previous run.
-                currentcoro->sp = (uint32_t*) 1;
-
-                // when a coro exits the semaphore count doesnt matter: anyone who waits will be woken up.
-                currentcoro->waitable.semaphore = 0x7F;
-                if (currentcoro->waitable.waitchain)
-                {
-                    wakeup_locked(currentcoro->waitable.waitchain);  // FIXME: do proper chain stuff!
-                    currentcoro->waitable.waitchain = NULL;
-                }
+                wakeup_locked(currentcoro->waitable.waitchain);  // FIXME: do proper chain stuff!
+                currentcoro->waitable.waitchain = NULL;
+            }
 
 #if PICO_USE_STACK_GUARDS
-                uninstall_stack_guard((void*) &((Coroutine<>*) currentcoro)->stack[0]);
+            uninstall_stack_guard((void*) &((Coroutine<>*) currentcoro)->stack[0]);
 #endif
-            }
-
-            if (is_sleeping)
-            {
-                is_resched = false;
-
-                if (is_at_the_end_of_time(currentcoro->wakeuptime))
-                    ll_push_back(&waiting4timer, &currentcoro->llentry);
-                else
-                    ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
-            }
-
-            if (is_resched)
-                ll_push_back(&ready2run, &currentcoro->llentry);
         }
+
+        if (is_sleeping)
+        {
+            is_resched = false;
+
+            if (is_at_the_end_of_time(currentcoro->wakeuptime))
+                ll_push_back(&waiting4timer, &currentcoro->llentry);
+            else
+                ll_sorted_insert<offsetof(CoroutineHeader, wakeuptime) - offsetof(CoroutineHeader, llentry), uint64_t>(&waiting4timer, &currentcoro->llentry);
+        }
+
+        if (is_resched)
+            ll_push_back(&ready2run, &currentcoro->llentry);
     } // scoping for var visibility
 
     prime_scheduler_timer_locked();
 
     while (ll_is_empty(&ready2run))
     {
-        // anyone waiting for timeout or for explicit wakeup?
-        if (ll_is_empty(&waiting4timer))
-        {
-            // if nothing in timer queue then return to mainflow (nothing left to execute).
-            critical_section_exit(&lock);
-            return mainflow.sp;
-        }
+        // if we are spinning here because no coro is ready-to-run then we'd
+        // expect there to be a coro waiting on a timeout maybe...
+        // if there isn't it means we are stuck, will loop forever here.
+        // during debugging, that is probably something we want to break on.
+        assert(!ll_is_empty(&waiting4timer));
 
         critical_section_exit(&lock);
 
@@ -386,6 +378,7 @@ static void SCHEDFUNC(install_stack_guard)(void* stacktop)
 }
 #endif // if PICO_USE_STACK_GUARDS
 
+/** @internal */
 static void fill_stack(uint32_t* stacktopptr, unsigned int stacksize)
 {
     for (unsigned int i = 0; i < stacksize; ++i)
@@ -402,10 +395,9 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
         return;
     }
 
-    bool is_first_coro = false;
-    if (!mainflow.sp)
+    if (!initialised)
     {
-        is_first_coro = true;
+        initialised = true;
         ll_init_list(&ready2run);
         ll_init_list(&waiting4timer);
         critical_section_init(&lock);
@@ -426,15 +418,13 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
         headrunningsince = get_absolute_time();
 #endif
 
-        // i need mainflow in ready2run.head so that schedule_next() does the right thing.
+        // i need initialisercoro in ready2run.head so that schedule_next() does the right thing.
         // remember: head is currently executing.
-        ll_push_back(&ready2run, &mainflow.llentry);
-        // mainflow.sp will be updated by yield().
-
-        // run this pseudo coro only once (right now).
-        mainflow.flags |= FLAGS_DO_NOT_RESCHEDULE;
-        // cannot wait for mainflow to finish running, it'll always outlive any and all coros!
-        mainflow.waitable.semaphore = 0x7F;
+        // yield() and schedule_next() will write sp of the coro in ready2run.
+        // initialisercoro is basically just a bit dump to receive that sp we'll never need again.
+        ll_push_back(&ready2run, &initialisercoro.llentry);
+        // with this flag it'll fall off the end and never bother us again.
+        initialisercoro.flags |= FLAGS_DO_NOT_RESCHEDULE;
     }
 
     Coroutine<>*    ptrhelper = (Coroutine<>*) storage;
@@ -481,16 +471,6 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
     critical_section_exit(&lock);
 
     yield();
-
-    if (is_first_coro)
-    {
-#if PICO_USE_STACK_GUARDS
-        uninstall_stack_guard((void*) &scheduler_stack[0]);
-#endif
-        // coroutines don't end up here.
-        // but the mainflow does... and we'll need to cleanup.
-        critical_section_deinit(&lock);
-    }
 }
 
 void SCHEDFUNC(yield_and_exit)(uint32_t exitcode)

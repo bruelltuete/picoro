@@ -59,7 +59,7 @@ struct CoroutineHeader
 template <int StackSize_ = 256>
 struct Coroutine : CoroutineHeader
 {
-    static const int StackSize = StackSize_;
+    static constexpr int StackSize = StackSize_;
 
     // stack should be small, no need for recursive/deep callstacks.
     // BUT: if you want to use printf you need lots more than 128*4=512 bytes of stack!
@@ -100,7 +100,8 @@ extern void yield();
 /**
  * @brief Yields execution and starts another coroutine.
  * If called from an existing coroutine then it will eventually return.
- * If called from outside of coroutine it will only return when all currently running coroutines have finished.
+ * If called from outside of a coroutine it will never return; i.e. the very first call to
+ * yield_and_start() will not return.
  * A coroutine that has been previously started but has not exited yet is considered "live".
  * Starting a "live" coroutine does nothing, the attempt is ignored.
  * 
