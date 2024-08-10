@@ -20,15 +20,15 @@ static struct LinkedList    ready2run;
 static struct LinkedList    waiting4timer;
 static critical_section_t   lock;
 #if PICORO_TRACK_EXECUTION_TIME
-static absolute_time_t      headrunningsince;   //< Head of ready2run running since this timestamp, in microseconds. Used to update timespentexecuting.
+static absolute_time_t      headrunningsince;   // Head of ready2run running since this timestamp, in microseconds. Used to update timespentexecuting.
 #endif
 
-#define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        //< Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
+#define FLAGS_DO_NOT_RESCHEDULE     (1 << 1)        // Once the coro ends up in the scheduler it will not be rescheduled, effectively exiting it.
 
 // only needs the header, no need for stack.
 static CoroutineHeader     mainflow;
 
-static bool isdebuggerattached = false;     //< False if we think it's unlikely that a debugger is attached. True if we are pretty sure there is one.
+static bool isdebuggerattached = false;     // False if we think it's unlikely that a debugger is attached. True if we are pretty sure there is one.
 
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
@@ -280,7 +280,7 @@ void SCHEDFUNC(yield)()
 
     // ugh, the asm syntax is beyond me... by calling another func we are at least (guaranteed?) to get this value in r0.
     // at least thats what the calling convention says.
-    volatile uint32_t* schedsp = &scheduler_stack[sizeof(scheduler_stack) / sizeof(scheduler_stack[0])];
+    volatile uint32_t* schedsp = &scheduler_stack[count_of(scheduler_stack)];
     yield1(schedsp);
 
     return;
@@ -408,7 +408,7 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
         soonestalarmid = 0;
 
 #ifndef NDEBUG
-        for (unsigned int i = 0; i < sizeof(scheduler_stack) / sizeof(scheduler_stack[i]); ++i)
+        for (unsigned int i = 0; i < count_of(scheduler_stack); ++i)
             scheduler_stack[i] = 0xdeadbeef;
 #endif
 
