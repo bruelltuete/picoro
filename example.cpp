@@ -32,7 +32,7 @@ uint32_t coroutine_1(uint32_t param)
     return 0;
 }
 
-int main() 
+int main()
 {
     stdio_init_all();
 
@@ -41,7 +41,7 @@ int main()
     printf("Hello, coroutine test!\n");
 
     yield_and_start(coroutine_1, 100, &block1);
-
-    printf("done\n");
+    // will never get here: the scheduler never exits.
+    printf("done?\n");
     return 0;
 }
