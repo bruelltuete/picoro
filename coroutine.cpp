@@ -33,7 +33,7 @@ static bool isdebuggerattached = false;     // False if we think it's unlikely t
 // separate stack for schedule_next(), otherwise every coro would have to provision extra stack space for it.
 // (instead of only once here)
 // FIXME: consider putting this into scratch_y section! (which has 4k space, 2k for mainflow core0 stack, so 2k left for us)
-static volatile uint32_t scheduler_stack[256]  __attribute__((aligned(32)));
+static uint32_t scheduler_stack[256]  __attribute__((aligned(32)));
 
 static_assert(sizeof(uint32_t*) == sizeof(uint32_t));
 static_assert(sizeof(mainflow.llentry) == 4);
