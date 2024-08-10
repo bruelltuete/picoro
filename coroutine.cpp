@@ -386,6 +386,12 @@ static void SCHEDFUNC(install_stack_guard)(void* stacktop)
 }
 #endif // if PICO_USE_STACK_GUARDS
 
+static void fill_stack(uint32_t* stacktopptr, unsigned int stacksize)
+{
+    for (unsigned int i = 0; i < stacksize; ++i)
+        stacktopptr[i] = 0xdeadbeef;
+}
+
 void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, CoroutineHeader* storage, int stacksize)
 {
     PROFILE_THIS_FUNC;
@@ -408,8 +414,7 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
         soonestalarmid = 0;
 
 #ifndef NDEBUG
-        for (unsigned int i = 0; i < count_of(scheduler_stack); ++i)
-            scheduler_stack[i] = 0xdeadbeef;
+        fill_stack(&scheduler_stack[0], count_of(scheduler_stack));
 #endif
 
 #if PICO_USE_STACK_GUARDS
@@ -436,8 +441,7 @@ void SCHEDFUNC(yield_and_start_ex)(coroutinefp_t func, uint32_t param, Coroutine
     assert(((int32_t) &ptrhelper->stack[0]) % 8 == 0);
 
 #ifndef NDEBUG  // for debugging
-    for (int i = 0; i < stacksize; ++i)
-        ptrhelper->stack[i] = 0xdeadbeef;
+    fill_stack(&ptrhelper->stack[0], stacksize);
 #endif
 
     storage->waitable.waitchain = NULL;
