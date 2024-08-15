@@ -650,3 +650,44 @@ bool SCHEDFUNC(check_debugger_attached)()
 
     return isdebuggerattached;
 }
+
+static void update_stack_registers(const uint32_t* new_sp)
+{
+    // SP_main is the "normal" stack up to now.
+    // we want it as SP_process.
+    // FIXME: no idea about this terrible asm syntax, hope i got it right...
+    __asm volatile (
+        // capture old sp_main (which will become sp_process).
+        "mrs r1, msp;"
+        // set sp_main to new value. this will be irq stack later on.
+        "msr msp, %0;"
+        // switch on sp_process: set spsel=1
+        "mov r0, #2;"
+        "msr control, r0;"
+        // set sp_process to old sp_main, which is the stack of our caller. the normal program stack.
+        "msr psp, r1;"
+        : // out
+        : "r" (new_sp) // in
+        : "r0", "r1", "memory"  // clobber: make sure compiler has generated stores before and loads after this block.
+    );
+
+    // safe to return: sp_process is now in use.
+}
+
+void setup_irq_stack(const uint32_t* stacktop, int stacksize)
+{
+    assert(stacksize > 32);
+    assert(((uint32_t) stacktop & 0x01F) == 0);
+
+    uint32_t save = save_and_disable_interrupts();
+
+    update_stack_registers(&stacktop[stacksize]);
+
+#if PICO_USE_STACK_GUARDS
+    // we protect stack-overflow (ie running below the top address).
+    // underflow is a lot less likely, ie popping too many variables is just not happening.
+    install_stack_guard((void*) &stacktop[0]);
+#endif
+
+    restore_interrupts(save);
+}

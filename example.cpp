@@ -96,6 +96,10 @@ static uint32_t coroutine_1(uint32_t param)
     return 0;
 }
 
+// picoro uses some pico-sdk functions that are very stack-bloaty.
+// so we need at least 256*4 stack size, otherwise hardfault in the scheduler.
+uint32_t    irq_stack[256]  __attribute__((aligned(32)));
+
 int main()
 {
     stdio_init_all();
@@ -104,6 +108,7 @@ int main()
 
     printf("Hello, coroutine test!\n");
 
+    setup_irq_stack(&irq_stack[0], count_of(irq_stack));
     yield_and_start(coroutine_1, 100, &block1);
     // will never get here: the scheduler never exits.
     printf("done?\n");

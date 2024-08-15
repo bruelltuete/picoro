@@ -151,3 +151,13 @@ extern void signal(Waitable* waitable);
  * @return false if so far no debugger has been observed.
  */
 extern bool check_debugger_attached();
+
+/**
+ * @brief Sets up a separate stack for IRQs.
+ * SP_main (aka MSP) will be used for IRQs.
+ * SP_process (aka PSP) will be used for the non-IRQ program (the caller).
+ * @warning You need to call this very early on, before any other coro routine.
+ * @param stacktop the equiv of &stack[0], should be 32-byte aligned!
+ * @param stacksize in units of uint32_t, should be ~256 or larger
+ */
+extern void setup_irq_stack(const uint32_t* stacktop, int stacksize);
