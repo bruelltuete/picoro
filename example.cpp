@@ -10,10 +10,10 @@ struct Coroutine<>    block1;
 struct Coroutine<>    block2;
 struct Coroutine<>    block3;
 
-int dmawritechannel = -1;
+static int dmawritechannel = -1;
 
-uint32_t    readbuf = 0x1234;
-uint32_t    writebuf;
+static uint32_t    readbuf = 0x1234;
+static uint32_t    writebuf;
 
 static void __no_inline_not_in_flash_func(dma_irq_handler)()
 {
@@ -31,6 +31,7 @@ static void __no_inline_not_in_flash_func(dma_irq_handler)()
     restore_interrupts(save);
 }
 
+/** Example coro to spin a DMA completion IRQ. */
 static uint32_t coroutine_3(uint32_t param)
 {
     dmawritechannel = dma_claim_unused_channel(true);
@@ -41,7 +42,7 @@ static uint32_t coroutine_3(uint32_t param)
     channel_config_set_transfer_data_size(&dmawritecfg, DMA_SIZE_32);
 
     int dmatimer = dma_claim_unused_timer(true);
-    dma_timer_set_fraction(dmatimer, 1, 10000);       // 120 MHz / 100
+    dma_timer_set_fraction(dmatimer, 1, 10000);       // 120 MHz / 10_000
     channel_config_set_dreq(&dmawritecfg, dma_get_timer_dreq(dmatimer));
     dma_channel_set_config(dmawritechannel, &dmawritecfg, false);
 
@@ -68,6 +69,7 @@ static uint32_t coroutine_3(uint32_t param)
     return 0;
 }
 
+/** Example coro to count down, exit when done. */
 static uint32_t coroutine_2(uint32_t param)
 {
     yield_and_start(coroutine_3, 0, &block3);
@@ -82,6 +84,7 @@ static uint32_t coroutine_2(uint32_t param)
     return 0;
 }
 
+/** Example coro to count down, exit when done. */
 static uint32_t coroutine_1(uint32_t param)
 {
     yield_and_start(coroutine_2, 50, &block2);
