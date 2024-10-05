@@ -85,15 +85,24 @@ static void __no_inline_not_in_flash_func(i2chandler)()
 
         if (intstatus & I2C_IC_INTR_STAT_R_TX_ABRT_BITS)
         {
-            // need to read to clear the irq (it always reads as zero, nothing useful to do with the result).
-            i2c_get_hw(i2c)->clr_tx_abrt;
 
             *driverstate[I].wasaborted = true;
+
+            // we've got a race with i2c having been aborted and cancelling
+            // the dma transfer. post-abort we may still end up stuff more tx bits in!
+            // so disable i2c dma here.
+            i2c_get_hw(i2c)->dma_cr = 0;
 
             // not sure which one tbh... lets cancel both.
             // note: right now we dont care how much of the request was completed, e.g. 50% was sent, don't care. if we did we'd have to check transfer_count before cancelling!
             dma_channel_abort(driverstate[I].dmareadchannel);
             dma_channel_abort(driverstate[I].dmawritechannel);
+
+            // need to read to clear the irq (it always reads as zero, nothing useful to do with the result).
+            // but clear only once dma has been cancelled!
+            // i2c chip keeps the fifos clear as long as the abort is in progress. if we clear it too early
+            // we can enter the race mentioned above.
+            i2c_get_hw(i2c)->clr_tx_abrt;
 
             if (!driverstate[I].haswokenup)
             {
@@ -205,6 +214,9 @@ static uint32_t DRVFUNC(i2cdriver_func)(uint32_t param)
             i2c_get_hw(i2c)->enable = 0;
             i2c_get_hw(i2c)->tar = c.address;
             i2c_get_hw(i2c)->intr_mask = I2C_IC_INTR_MASK_M_TX_ABRT_BITS;
+            // explicitly switch on tx/rx dma signals on the i2c side.
+            // we may have disabled those earlier. so re-enable.
+            i2c_get_hw(i2c)->dma_cr = I2C_IC_DMA_CR_TDMAE_BITS | I2C_IC_DMA_CR_RDMAE_BITS;
             i2c_get_hw(i2c)->enable = 1;
 
             const int i2cirq = i2c_hw_index(i2c) + I2C0_IRQ;
